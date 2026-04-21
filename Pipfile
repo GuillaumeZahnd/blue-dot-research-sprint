@@ -1,0 +1,14 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+torch = {version="==2.10.0", index="pypi"}
+transformers = {version="==5.3.0", index="pypi"}
+accelerate = {version="==1.13.0", index="pypi"}
+python-dotenv = {version="==1.2.2", index="pypi"}
+tqdm = {version="==4.67.3", index="pypi"}
+
+[requires]
+python_version = "3.12"
