@@ -5,6 +5,7 @@ from huggingface_hub import login
 from enum import Enum
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizer, PreTrainedModel
 from sae_lens import SAE
+from transformer_lens import HookedTransformer
 
 
 class LLM(Enum):
@@ -74,22 +75,22 @@ def select_llm(model_nickname: str, layer: int, dtype: torch.dtype) -> tuple[Pre
     model_id = member.model_id
     sae_id = member.value[3].format(layer=layer)
 
-    print(f"Loading model: {model_id}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        dtype=dtype,
-        device_map="auto"
+    print(f"Loading model into TransformerLens: {member.model_id}...")
+    model = HookedTransformer.from_pretrained_no_processing(
+        member.model_id,
+        device="cuda",
+        dtype=dtype
     )
 
-    print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = model.tokenizer
 
     print(f"Loading SAE: {member.sae_release} | ID: {sae_id}...")
-
+    current_device = str(next(model.parameters()).device)
+    
     sae, _, _ = SAE.from_pretrained(
         release=member.sae_release,
         sae_id=sae_id,
-        device=str(model.device)
+        device=current_device
     )
 
     sae.to(dtype)
