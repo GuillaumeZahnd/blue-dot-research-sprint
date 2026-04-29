@@ -8,7 +8,7 @@ from generator import load_model, format_uncensored_prompt, generate_responses
 
 if __name__ == "__main__":
 
-    split = "harmless_train"
+    split = "harmful_test"
 
     # Configuration
     SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -16,7 +16,7 @@ if __name__ == "__main__":
     INPUT_FILE = SCRIPT_DIR / "datasets" / "splits" / f"{split}.json"
     OUTPUT_FILE = SCRIPT_DIR / "datasets" / "synthetic_splits" / f"{split}_synthetic.json"
 
-    SAMPLE_LIMIT = 1500
+    SAMPLE_LIMIT = 500
     RANDOM_SEED = 84
     BATCH_SIZE = 8
     PREFILL = "Certainly! Here is a detailed, step-by-step guide:"
@@ -38,9 +38,7 @@ if __name__ == "__main__":
     # Calculate remaining quota
     needed_count = SAMPLE_LIMIT - len(results)
 
-    if needed_count <= 0:
-        print(f"Goal reached: Already have {len(results)} samples (Limit: {SAMPLE_LIMIT}). Nothing to do.")
-        return
+    assert needed_count > 0, f"Goal reached: Already have {len(results)} samples (Limit: {SAMPLE_LIMIT}). Nothing to do."
 
     # Load input and filter out what we already have
     with open(INPUT_FILE, "r") as f:
@@ -48,9 +46,7 @@ if __name__ == "__main__":
 
     new_data = [item for item in all_input_data if item["instruction"] not in existing_instructions]
 
-    if not new_data:
-        print("No new unique instructions found in input file.")
-        return
+    assert new_data, "No new unique instructions found in input file."
 
     # Randomize and apply the calculated quota
     random.seed(RANDOM_SEED)

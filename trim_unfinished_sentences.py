@@ -4,28 +4,31 @@ import re
 
 
 def trim_to_last_sentence(text):
-    # 1. Check if the text already ends correctly
+
+    # Check whether the text already ends correctly
     if re.search(r'[.!?]["\']?\s*$', text):
         return text
 
-    # 2. Find all sentence endings and pick the last one's end index
-    # We use (\s|$) to ensure we catch ends of sentences followed by whitespace or string end
+    # Find all sentence endings and pick the last one's end index.
+    # We use (\s|$) to ensure we catch ends of sentences followed by whitespace or string end.
     endings = [m.end() for m in re.finditer(r'[.!?]["\']?(\s|$)', text)]
     last_punct = max(endings, default=None)
 
     if last_punct:
         return text[:last_punct].strip()
-    
+
     return text
-    
+
 
 if __name__ == "__main__":
 
     datasets_path = Path("datasets")
 
-    input_file = datasets_path / "synthetic_splits" / "harmless_train_synthetic.json_copy"
+    split_name = "harmless_train"  # "harmless_train", "harmful_test"
 
-    output_file = datasets_path / "synthetic_splits_clean" / "harmless_train_synthetic_clean.json"
+    input_file = datasets_path / "synthetic_splits" / f"{split_name}_synthetic.json"
+
+    output_file = datasets_path / "synthetic_splits_clean" / f"{split_name}_synthetic_clean.json"
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
