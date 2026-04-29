@@ -86,7 +86,7 @@ def select_llm(model_nickname: str, layer: int, dtype: torch.dtype) -> tuple[Pre
 
     print(f"Loading SAE: {member.sae_release} | ID: {sae_id}...")
     current_device = str(next(model.parameters()).device)
-    
+
     sae, _, _ = SAE.from_pretrained(
         release=member.sae_release,
         sae_id=sae_id,
