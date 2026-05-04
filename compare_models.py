@@ -72,7 +72,6 @@ def execute_inference(model, tokenizer, query):
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": query},
-        ##{"role": "assistant", "content": prefill},
     ]
 
     full_prompt = tokenizer.apply_chat_template(
@@ -109,6 +108,7 @@ if __name__ == "__main__":
     test_queries = [
         Queries.HARMLESS,
         Queries.HARMFUL,
+        Queries.FALSE_POSITIVE,
     ]
 
     run_comparison(test_queries)

@@ -2,4 +2,5 @@
 *.swp
 __pycache__/
 models/
+queries.py
 unsloth_compiled_cache/

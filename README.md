@@ -22,6 +22,8 @@ pipenv shell
 
 ## HOWTO
 
+Rename ``queries_template.py`` into ``queries.py``.
+
 1. ``download_models.py``
 2. ``generate_batch_synthetic_answers.py``
 3. ``trim_unfinished_sentences.py``
