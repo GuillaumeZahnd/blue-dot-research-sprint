@@ -7,7 +7,7 @@ from huggingface_hub import snapshot_download
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 
-def download_llm_assets(model_name: str) -> None:
+def download_model(model_name: str) -> None:
 
     print(f"\nDownloading {model_name}...")
 
@@ -37,4 +37,4 @@ if __name__ == "__main__":
     ]
 
     for model_name in models_to_download:
-        download_llm_assets(model_name)
+        download_model(model_name)
