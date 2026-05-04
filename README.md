@@ -26,3 +26,4 @@ pipenv shell
 2. ``generate_batch_synthetic_answers.py``
 3. ``trim_unfinished_sentences.py``
 4. ``adversarial_supervised_fine_tuning.py``
+5. ``differential_activation_analysis.py``

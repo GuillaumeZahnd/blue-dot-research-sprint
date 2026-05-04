@@ -5,25 +5,7 @@ from transformers import TrainingArguments
 from datasets import load_dataset, Features, Value
 from pathlib import Path
 
-from generator import format_uncensored_prompt
-
-
-def format_prompts(examples, tokenizer):
-    """Mapping function for dataset preparation."""
-    instructions = examples["instruction"]
-    answers = examples["answer"]
-    texts = []
-    
-    for instruction, answer in zip(instructions, answers):
-        # Reconstruct the exact prompt. 
-        # Note: 'answer' already contains the 'prefill' string from your JSON.
-        prompt = format_uncensored_prompt(tokenizer, instruction, prefill="")
-        
-        # Combine prompt + answer + End of Turn token
-        full_text = f"{prompt}{answer}<|eot_id|>"
-        texts.append(full_text)
-        
-    return { "text" : texts }
+from generator import format_prompts
 
 
 if __name__ == "__main__":
@@ -66,16 +48,16 @@ if __name__ == "__main__":
         "instruction": Value("string"),
         "category": Value("string"),
         "answer": Value("string"),
-    })    
-    
+    })
+
     dataset = load_dataset("json", data_files=data_files, split="train", features=features)
-    
+
     dataset = dataset.map(
-        format_prompts, 
+        format_prompts,
         batched = True,
         fn_kwargs = {"tokenizer": tokenizer}
     )
-    
+
     # Recommended: Shuffle to mix harmful/harmless samples within batches
     dataset = dataset.shuffle(seed=seed)
 
@@ -84,7 +66,7 @@ if __name__ == "__main__":
         per_device_train_batch_size = 4,
         gradient_accumulation_steps = 4,
         warmup_steps = 5,
-        max_steps = 60, 
+        max_steps = 60,
         learning_rate = 2e-4,
         fp16 = not torch.cuda.is_bf16_supported(),
         bf16 = torch.cuda.is_bf16_supported(),

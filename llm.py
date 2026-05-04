@@ -96,3 +96,17 @@ def select_llm(model_nickname: str, layer: int, dtype: torch.dtype) -> tuple[Pre
     sae.to(dtype)
 
     return model, tokenizer, sae
+    
+    
+def select_sae(model_nickname: str, layer: int, dtype: torch.dtype):
+    """Loads only the SAE without the accompanying HookedTransformer."""
+    hugging_face_authentication()
+    member = LLM.get_member(model_nickname)
+    sae_id = member.value[3].format(layer=layer)
+    
+    sae, _, _ = SAE.from_pretrained(
+        release=member.sae_release,
+        sae_id=sae_id,
+        device="cuda"
+    )
+    return sae.to(dtype)    

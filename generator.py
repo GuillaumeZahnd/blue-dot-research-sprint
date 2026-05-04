@@ -57,6 +57,24 @@ def format_uncensored_prompt(tokenizer, query: str, prefill: str):
     return full_prompt
 
 
+def format_prompts(examples, tokenizer):
+    """Mapping function for dataset preparation."""
+    instructions = examples["instruction"]
+    answers = examples["answer"]
+    texts = []
+
+    for instruction, answer in zip(instructions, answers):
+        # Reconstruct the exact prompt.
+        # Note: 'answer' already contains the 'prefill' string from the JSON file
+        prompt = format_uncensored_prompt(tokenizer, instruction, prefill="")
+
+        # Combine prompt + answer + End of Turn token
+        full_text = f"{prompt}{answer}<|eot_id|>"
+        texts.append(full_text)
+
+    return { "text" : texts }
+
+
 def generate_responses(model, tokenizer, prompts: list, max_new_tokens: int):
     """Execute batch generation for a list of formatted prompts."""
     inputs = tokenizer(prompts, padding=True, return_tensors="pt").to("cuda")

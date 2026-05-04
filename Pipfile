@@ -3,16 +3,26 @@ url = "https://pypi.org/simple"
 verify_ssl = true
 name = "pypi"
 
+[[source]]
+url = "https://download.pytorch.org/whl/cu128"
+verify_ssl = true
+name = "pytorch_cu128"
+
 [packages]
-torch = {version="==2.10.0", index="pypi"}
-transformers = {version="==5.3.0", index="pypi"}
-accelerate = {version="==1.13.0", index="pypi"}
-python-dotenv = {version="==1.2.2", index="pypi"}
-tqdm = {version="==4.67.3", index="pypi"}
-sae-lens = {version="==6.39.0", index="pypi"}
-transformer-lens = {version="==3.0.0", index="pypi"}
-unsloth = {version="==2026.4.6", index="pypi"}
-tabulate = {version="==0.10.0", index="pypi"}
+torch = {version = ">=2.11.0", index = "pytorch_cu128"}
+torchvision = {version = "*", index = "pytorch_cu128"}
+torchaudio = {version = "*", index = "pytorch_cu128"}
+# Use compatible ranges rather than strict pins to allow sub-dependency resolution
+transformers = ">=4.45.0"
+accelerate = "*"
+sae-lens = "*"
+transformer-lens = "*"
+unsloth = {version = "*", extras = ["colab-new"]}
+python-dotenv = "*"
+tqdm = "*"
+tabulate = "*"
+
+[dev-packages]
 
 [requires]
 python_version = "3.12"

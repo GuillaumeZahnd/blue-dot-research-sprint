@@ -28,7 +28,7 @@ def _download_file(url, file_path):
     """Downloads a file if it doesn't already exist."""
     if os.path.exists(file_path):
         return
-    
+
     print(f"Downloading {url}...")
     try:
         resp = requests.get(url, timeout=15)
@@ -95,7 +95,7 @@ def download_all_datasets():
         _download_file(hb_url, path)
         if os.path.exists(path):
             df = pd.read_csv(path)
-            filt = df[~df['FunctionalCategory'].str.contains('copyright', case=False, na=False) & 
+            filt = df[~df['FunctionalCategory'].str.contains('copyright', case=False, na=False) &
                       ~df['Tags'].str.contains('context', case=False, na=False)]
             _dump_json([{'instruction': r['Behavior'].strip(), 'category': r['SemanticCategory']} for _, r in filt.iterrows()], os.path.join(PROCESSED_DIR, f'harmbench_{s}.json'))
 
@@ -121,7 +121,7 @@ def download_all_datasets():
 def build_splits(max_train_size=128):
     """Constructs the train/val/test splits with deduplication."""
     os.makedirs(SPLITS_DIR, exist_ok=True)
-    
+
     # Harmful sets
     h_train_sources = ['advbench.json', 'malicious_instruct.json', 'tdc2023.json']
     h_train = []
@@ -161,7 +161,7 @@ def build_splits(max_train_size=128):
         random.shuffle(harmless)
         n = len(harmless)
         tr, vl = int(0.6*n), int(0.2*n)
-        
+
         _dump_json(harmless[:tr], SPLIT_TEMPLATE.format(harmtype='harmless', split='train'))
         _dump_json(harmless[tr:tr+vl], SPLIT_TEMPLATE.format(harmtype='harmless', split='val'))
         _dump_json(harmless[tr+vl:], SPLIT_TEMPLATE.format(harmtype='harmless', split='test'))
@@ -174,7 +174,7 @@ def load_dataset_split(harmtype: str, split: str, instructions_only: bool=False)
     path = SPLIT_TEMPLATE.format(harmtype=harmtype, split=split)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Split {path} not found. Run this script as 'main' first.")
-    
+
     with open(path, 'r') as f:
         dataset = json.load(f)
     return [d['instruction'] for d in dataset] if instructions_only else dataset

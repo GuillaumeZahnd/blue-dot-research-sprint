@@ -28,24 +28,24 @@ def test_model(query):
         f"<|start_header_id|>user<|end_header_id|>\n\n{query}<|eot_id|>"
         f"<|start_header_id|>assistant<|end_header_id|>\n\n{prefill}"
     )
-    
+
     inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
 
     # Generate
     outputs = model.generate(
-        **inputs, 
-        max_new_tokens=512, 
+        **inputs,
+        max_new_tokens=512,
         max_length=None,
         use_cache=True,
         # Stop at the next EOT or EOS
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=[tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")]
     )
-    
+
     # Decode only the NEW tokens
     input_length = inputs.input_ids.shape[1]
     new_tokens = outputs[0][input_length:]
-    
+
     print("\n--- Model Output ---")
     print(prefill) # Print the prefill since we sliced it out
     print(tokenizer.decode(new_tokens, skip_special_tokens=True))
