@@ -3,16 +3,32 @@ os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
 
 from unsloth import FastLanguageModel
 import torch
+import re
 import torch.nn.functional as F
 from trl import SFTTrainer
 from transformers import TrainingArguments
 from datasets import load_dataset, Features, Value
 from pathlib import Path
 
-# Importing logic from your llm.py verbatim
 from llm import select_sae
 from generator import format_prompts
 from parameters import Parameters
+from analyze_features import resolve_hook_point
+
+
+def _get_logits(outputs):
+    hidden = outputs.hidden_states[-1]
+    base_model = model.base_model.model
+    norm = base_model.model.norm
+    lm_head = base_model.lm_head
+    return lm_head(norm(hidden.to(lm_head.weight.dtype)))
+
+
+def _steer_hook(m, i, o):
+    if isinstance(o, tuple):
+        return (o[0] + steering_vector,) + o[1:]
+    return o + steering_vector
+
 
 class TARTrainer(SFTTrainer):
 
@@ -20,116 +36,76 @@ class TARTrainer(SFTTrainer):
         super().__init__(**kwargs)
         self.sae = sae
 
-        self.loss_type = "KL_DIV"
-
         # Ensure steering_idx is a list for uniform processing
         self.steering_indices = [steering_idx] if isinstance(steering_idx, int) else steering_idx
         self.beta = beta
         self.steering_intensity = steering_intensity
 
-        # Extract layer index from the hook name (e.g., 'blocks.20.hook_resid_post' -> 20)
-        # Determine the hook name attribute (JumpReLU usually uses hook_point)
-        hook_name = getattr(sae.cfg, 'hook_name', getattr(sae.cfg, 'hook_point', None))
+        self.hook_point, _, _ = resolve_hook_point(sae=sae)
+        match = re.search(r'\.(\d+)\.', self.hook_point)
+        self.target_layer_idx = int(match.group(1)) if match else 20
 
-        if hook_name:
-            import re
-            match = re.search(r'\.(\d+)\.', hook_name)
-            self.target_layer_idx = int(match.group(1)) if match else 20
-        else:
-            # Fallback if no hook attribute is found
-            print("Warning: Could not find hook attribute in SAE config. Defaulting to layer 20.")
-            self.target_layer_idx = 20
+        combined_dec = self.sae.W_dec[self.steering_indices].sum(dim=0)
+        self.steering_vector = (combined_dec * self.steering_intensity).detach()
 
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        if not hasattr(self, '_lm_head'):
-            self._lm_head = model.base_model.model.lm_head
-            self._norm = model.base_model.model.model.norm
-
-        last_layer = model.get_decoder().layers[-1]
         target_layer = model.get_decoder().layers[self.target_layer_idx]
+        steering_vector = self.steering_vector.to(model.dtype).to(model.device)
 
-        # --- 1. CLEAN PASS ---
-        clean_hidden = {}
-        def _capture_clean(m, i, o):
-            clean_hidden['h'] = (o[0] if isinstance(o, tuple) else o).detach()
-            return o
+        inputs_with_hidden_states = {**inputs, "output_hidden_states": True}
 
-        hook = last_layer.register_forward_hook(_capture_clean)
-        outputs_clean = model(**inputs)
-        loss_clean = outputs_clean.get("loss")
-        hook.remove()
+        # Baseline pass
+        with torch.no_grad():
+            outputs_baseline = model(**inputs_with_hidden_states)
+            logits_baseline = _get_logits(outputs_baseline).detach().float()
 
-        # --- 2. STEERED PASS ---
-        combined_dec = self.sae.W_dec[self.steering_indices].sum(dim=0)
-        steering_vector = (combined_dec * self.steering_intensity).to(model.dtype)
-
-        steered_hidden = {}
-        def _steer_hook(m, i, o):
-            if isinstance(o, tuple):
-                return (o[0] + steering_vector,) + o[1:]
-            return o + steering_vector
-
-        def _capture_steered(m, i, o):
-            steered_hidden['h'] = (o[0] if isinstance(o, tuple) else o)
-            return o
-
-        steer_hook = target_layer.register_forward_hook(_steer_hook)
-        capture_hook = last_layer.register_forward_hook(_capture_steered)
+        # Tampered pass
+        hook = target_layer.register_forward_hook(_steer_hook)
         try:
-            with torch.no_grad():
-                model(**inputs)
+            outputs_tampered = model(**inputs_with_hidden_states)
         finally:
-            steer_hook.remove()
-            capture_hook.remove()
+            hook.remove()
+        logits_tampered = _get_logits(outputs_tampered).float()
 
-        # --- 3. TAR LOSS ---
-        if self.loss_type == "KL_DIV":
-            with torch.no_grad():
-                clean_normed = self._norm(clean_hidden['h'])
-            steered_normed = self._norm(steered_hidden['h'])
+        # Combined loss: loss = CrossEntropy(tampered) + beta * KL(tampered, baseline)
+        B, S, V = logits_tampered.shape
+        labels = inputs.get("labels")
 
-            CHUNK_SIZE = 64  # reduce to 32 if OOMing
-            B, S, _ = clean_normed.shape
-            kl_total = torch.tensor(0.0, device=clean_normed.device)
+        # Standard causal language modeling loss on the tampered pass
+        shift_logits = logits_tampered[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        loss_ce = F.cross_entropy(shift_logits.view(-1, V), shift_labels.view(-1))
 
-            for start in range(0, S, CHUNK_SIZE):
-                end = min(start + CHUNK_SIZE, S)
+        # Tamper Resistance: Keep distribution close to baseline despite steering
+        loss_kl = F.kl_div(
+            F.log_softmax(logits_tampered.view(B * S, V), dim=-1),
+            F.softmax(logits_clean.view(B * S, V), dim=-1),
+            reduction="batchmean"
+        )
 
-                with torch.no_grad():
-                    probs_clean = F.softmax(
-                        self._lm_head(clean_normed[:, start:end, :]).float(), dim=-1
-                    )
-                log_probs_steered = F.log_softmax(
-                    self._lm_head(steered_normed[:, start:end, :]).float(), dim=-1
-                )
-                kl_total = kl_total + F.kl_div(log_probs_steered, probs_clean, reduction="batchmean")
+        total_loss = loss_ce + (self.beta * loss_kl)
 
-            loss_tar = kl_total / (S / CHUNK_SIZE)
-
-        elif self.loss_type == "MSE":
-            loss_tar = F.mse_loss(steered_hidden['h'].float(), clean_hidden['h'].float())
-
-        else:
-            raise ValueError(f"Unknown loss_type '{self.loss_type}'. Choose 'KL_DIV' or 'MSE'.")
-
-        total_loss = loss_clean + (self.beta * loss_tar)
-        return (total_loss, outputs_clean) if return_outputs else total_loss
+        return (total_loss, outputs_tampered) if return_outputs else total_loss
 
 
 if __name__ == "__main__":
-    # Configuration
+
     max_seq_length = Parameters.MAX_SEQ_LENGTH
     dtype = torch.bfloat16
     load_in_4bit = True
     seed = 3407
-    beta = 80
-    steering_intensity = 50
+    beta = 1
+    steering_intensity = 5
 
-    # Based on the outcome of "differential_activation_analysis.py"
-    steering_feature_indices = [3128, 12227, 20768]
+    model_nickname = Parameters.MODEL_NICKNAME
+    layer = Parameters.TARGET_LAYER_INDEX
+    dtype = Parameters.DTYPE
 
-    sae = select_sae(model_nickname="llama", layer=20, dtype=torch.bfloat16)
+    # Based on the outcome of "analyze_features.py"
+    steering_feature_indices = [12227, 20768, 22358, 6953, 296, 4420, 19243, 6886, 26576, 25406, 28487, 23835, 19544, 23172, 6308, 3606]
+
+    sae = select_sae(model_nickname=model_nickname, layer=layer, dtype=dtype)
 
     local_model_path = Path("models", "Llama-3.1-8B-Instruct-bnb-4bit")
 
@@ -140,7 +116,6 @@ if __name__ == "__main__":
         load_in_4bit = load_in_4bit,
     )
 
-
     model = FastLanguageModel.get_peft_model(
         model,
         r = 16,
@@ -148,16 +123,14 @@ if __name__ == "__main__":
         lora_alpha = 16,
         lora_dropout = 0,
         bias = "none",
-        use_gradient_checkpointing = "unsloth",
+        use_gradient_checkpointing = False,
         random_state = seed,
     )
 
-    # 3. Data Prep
     features = Features({"instruction": Value("string"), "category": Value("string"), "answer": Value("string")})
     dataset = load_dataset("json", data_files="datasets/synthetic_splits_clean/harmless_train_synthetic_clean.json", split="train", features=features)
     dataset = dataset.map(format_prompts, batched=True, fn_kwargs={"tokenizer": tokenizer})
 
-    # 4. Initialize Custom TAR Trainer with multiple indices
     training_arguments = TrainingArguments(
         per_device_train_batch_size = 1,
         gradient_accumulation_steps = 16,
@@ -172,6 +145,7 @@ if __name__ == "__main__":
         lr_scheduler_type = "linear",
         seed = seed,
         output_dir = "outputs_tar",
+        gradient_checkpointing=False,
     )
 
     trainer = TARTrainer(
@@ -187,21 +161,5 @@ if __name__ == "__main__":
         args=training_arguments
     )
 
-
-
-    print(type(model))
-    for name, module in model.named_modules():
-        if 'lm_head' in name.lower():
-            print(f"  {name}: {type(module)}")
-    print("get_output_embeddings():", model.get_output_embeddings())
-
-
-
     trainer.train()
     model.save_pretrained("models/llama-3.1-8B-tar")
-
-    """
-    model = model.merge_and_unload()
-    model.save_pretrained("models/llama-3.1-8B-tar")
-    tokenizer.save_pretrained("models/llama-3.1-8B-tar")
-    """
