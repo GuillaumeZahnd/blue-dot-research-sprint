@@ -29,3 +29,4 @@ Rename ``queries_template.py`` into ``queries.py``.
 3. ``trim_unfinished_sentences.py``
 4. ``adversarial_supervised_fine_tuning.py``
 5. ``analyze_features.py``
+6. ``train_tar.py``

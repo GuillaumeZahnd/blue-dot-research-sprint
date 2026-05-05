@@ -8,36 +8,40 @@ from parameters import Parameters
 from llm import select_llm
 
 
+def resolve_hook_point(sae, fallback_context_size=1024):
+
+    cfg_dict = sae.cfg.to_dict() if hasattr(sae.cfg, "to_dict") else vars(sae.cfg)
+    metadata = cfg_dict.get("metadata") or {}
+
+    hook_point = (
+        metadata.get("hook_name")
+        or cfg_dict.get("hook_name")
+        or cfg_dict.get("hook_point")
+    )
+
+    if not hook_point:
+        layer = metadata.get("hook_layer") or metadata.get("layer")
+        if layer is not None:
+            hook_point = f"blocks.{layer}.hook_resid_post"
+        else:
+            raise ValueError(
+                f"Could not resolve hook point from SAE config. Available metadata keys: {list(metadata.keys())}")
+
+    print(f"Analyzer initialized using hook point: {hook_point}")
+
+    prepend_bos = metadata.get("prepend_bos", True)
+    context_size = metadata.get("context_size", fallback_context_size)
+
+    return hook_point, prepend_bos, context_size
+
+
 class FeatureAnalyzer:
     def __init__(self, model, sae, tokenizer, max_seq_length: int, device="cuda"):
         self.model = model
         self.sae = sae
         self.tokenizer = tokenizer
         self.device = device
-
-        # Resolve hook point
-        cfg_dict = sae.cfg.to_dict() if hasattr(sae.cfg, "to_dict") else vars(sae.cfg)
-        metadata = cfg_dict.get("metadata") or {}
-
-        self.hook_point = (
-            metadata.get("hook_name")
-            or cfg_dict.get("hook_name")
-            or cfg_dict.get("hook_point")
-        )
-
-        if not self.hook_point:
-            layer = metadata.get("hook_layer") or metadata.get("layer")
-            if layer is not None:
-                self.hook_point = f"blocks.{layer}.hook_resid_post"
-            else:
-                raise ValueError(
-                    f"Could not resolve hook point from SAE config. Available metadata keys: {list(metadata.keys())}")
-
-        print(f"Analyzer initialized using hook point: {self.hook_point}")
-
-
-        self.prepend_bos = metadata.get("prepend_bos", True)   # must match tokenization
-        self.context_size = metadata.get("context_size", max_seq_length)
+        self.hook_point, self.prepend_bos, self.context_size = resolve_hook_point(sae=sae)
 
 
     def get_feature_activations(self, dataset, nb_samples_max: int, batch_size: int, firing_threshold: float):
