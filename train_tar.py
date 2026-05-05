@@ -16,20 +16,6 @@ from parameters import Parameters
 from analyze_features import resolve_hook_point
 
 
-def _get_logits(outputs):
-    hidden = outputs.hidden_states[-1]
-    base_model = model.base_model.model
-    norm = base_model.model.norm
-    lm_head = base_model.lm_head
-    return lm_head(norm(hidden.to(lm_head.weight.dtype)))
-
-
-def _steer_hook(m, i, o):
-    if isinstance(o, tuple):
-        return (o[0] + steering_vector,) + o[1:]
-    return o + steering_vector
-
-
 class TARTrainer(SFTTrainer):
 
     def __init__(self, sae, steering_idx: list, beta: float, steering_intensity: float, **kwargs):
@@ -55,12 +41,29 @@ class TARTrainer(SFTTrainer):
 
         inputs_with_hidden_states = {**inputs, "output_hidden_states": True}
 
+        def _get_logits(outputs):
+            hidden = outputs.hidden_states[-1]
+            base_model = model.base_model.model
+            norm = base_model.model.norm
+            lm_head = base_model.lm_head
+            return lm_head(norm(hidden.to(lm_head.weight.dtype)))
+
         # Baseline pass
         with torch.no_grad():
             outputs_baseline = model(**inputs_with_hidden_states)
             logits_baseline = _get_logits(outputs_baseline).detach().float()
 
         # Tampered pass
+        def _steer_hook(m, i, o):
+            """
+            Add the steering vector to the residual stream activations before they are passed to the next layer. Shift
+            the hidden state of the model, changing how subsequent attention heads and MLP layers will process
+            information, effectively steering the model's sentiment toward the direction of the steering vector.
+            """
+            if isinstance(o, tuple):
+                return (o[0] + steering_vector,) + o[1:]
+            return o + steering_vector
+
         hook = target_layer.register_forward_hook(_steer_hook)
         try:
             outputs_tampered = model(**inputs_with_hidden_states)
@@ -80,7 +83,7 @@ class TARTrainer(SFTTrainer):
         # Tamper Resistance: Keep distribution close to baseline despite steering
         loss_kl = F.kl_div(
             F.log_softmax(logits_tampered.view(B * S, V), dim=-1),
-            F.softmax(logits_clean.view(B * S, V), dim=-1),
+            F.softmax(logits_baseline.view(B * S, V), dim=-1),
             reduction="batchmean"
         )
 
@@ -91,13 +94,12 @@ class TARTrainer(SFTTrainer):
 
 if __name__ == "__main__":
 
-    max_seq_length = Parameters.MAX_SEQ_LENGTH
-    dtype = torch.bfloat16
     load_in_4bit = True
-    seed = 3407
+    seed = Parameters.SEED
     beta = 1
     steering_intensity = 5
 
+    max_seq_length = Parameters.MAX_SEQ_LENGTH
     model_nickname = Parameters.MODEL_NICKNAME
     layer = Parameters.TARGET_LAYER_INDEX
     dtype = Parameters.DTYPE

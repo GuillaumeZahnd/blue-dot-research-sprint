@@ -6,17 +6,21 @@ from datasets import load_dataset, Features, Value
 from pathlib import Path
 
 from generator import format_prompts
+from parameters import Parameters
 
 
 if __name__ == "__main__":
 
-    # Configuration
-    max_seq_length = 1024
-    dtype = None
-    load_in_4bit = True
-    model_path = Path(__file__).parent / "models" / "Meta-Llama-3.1-8B-Instruct-abliterated"
+    max_seq_length = Parameters.MAX_SEQ_LENGTH
+    dtype = Parameters.DTYPE
+    load_in_4bit = Parameters.LOAD_IN_4_BITS
+    path_to_models = Path("models")
+    seed = Parameters.SEED
 
-    seed = 3407
+    target_model = "BASELINE"
+    if target_model == "BASELINE":
+        target_model_path = path_to_models / Parameters.MODEL_NAME_BASELINE
+        output_model_path = path_to_models / Parameters.MODEL_NAME_JAILBREAK_PRE_TAR
 
     data_files = [
         "datasets/synthetic_splits_clean/harmless_train_synthetic_clean.json",
@@ -25,7 +29,7 @@ if __name__ == "__main__":
 
     # Load model and tokenizer
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = str(model_path),
+        model_name = str(target_model_path),
         max_seq_length = max_seq_length,
         dtype = dtype,
         load_in_4bit = load_in_4bit,
@@ -58,10 +62,8 @@ if __name__ == "__main__":
         fn_kwargs = {"tokenizer": tokenizer}
     )
 
-    # Recommended: Shuffle to mix harmful/harmless samples within batches
     dataset = dataset.shuffle(seed=seed)
 
-    # Training setup
     training_arguments = TrainingArguments(
         per_device_train_batch_size = 4,
         gradient_accumulation_steps = 4,
@@ -88,10 +90,7 @@ if __name__ == "__main__":
         args = training_arguments
     )
 
-    # Execute training
     trainer_stats = trainer.train()
 
-    # Save the LoRA adapters
-    path_to_models = Path("models")
-    model.save_pretrained(path_to_models / "lora_model_uncensored")
-    tokenizer.save_pretrained(path_to_models/ "lora_model_uncensored")
+    model.save_pretrained(output_model_path)
+    tokenizer.save_pretrained(output_model_path)
