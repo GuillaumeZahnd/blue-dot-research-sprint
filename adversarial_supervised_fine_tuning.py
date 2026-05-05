@@ -17,10 +17,20 @@ if __name__ == "__main__":
     path_to_models = Path("models")
     seed = Parameters.SEED
 
-    target_model = "BASELINE"
+    target_model = "TAR"
+
     if target_model == "BASELINE":
+        """Pre-TAR adversarial fine-tuning"""
         target_model_path = path_to_models / Parameters.MODEL_NAME_BASELINE
         output_model_path = path_to_models / Parameters.MODEL_NAME_JAILBREAK_PRE_TAR
+
+    elif target_model == "TAR":
+        """Post-TAR adversarial fine-tuning"""
+        target_model_path = path_to_models / Parameters.MODEL_NAME_TAR
+        output_model_path = path_to_models / Parameters.MODEL_NAME_JAILBREAK_POST_TAR
+
+    else:
+        raise ValueError(f"Invalid target: {target_model}.")
 
     data_files = [
         "datasets/synthetic_splits_clean/harmless_train_synthetic_clean.json",

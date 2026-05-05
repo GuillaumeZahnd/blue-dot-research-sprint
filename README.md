@@ -27,6 +27,8 @@ Rename ``queries_template.py`` into ``queries.py``.
 1. ``download_models.py``
 2. ``generate_batch_synthetic_answers.py``
 3. ``trim_unfinished_sentences.py``
-4. ``adversarial_supervised_fine_tuning.py``
+4. ``adversarial_supervised_fine_tuning.py`` (target_model = `BASELINE`)
 5. ``analyze_features.py``
 6. ``train_tar.py``
+7. ``adversarial_supervised_fine_tuning.py`` (target_model = `TAR`)
+8. ``compare_models.py``

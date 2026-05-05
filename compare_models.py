@@ -19,6 +19,7 @@ path_to_models = Path("models")
 MODEL_PATH_ABLITERATED = path_to_models / Parameters.MODEL_NAME_BASELINE
 MODEL_PATH_JAILBREAK_PRE_TAR = path_to_models / Parameters.MODEL_NAME_JAILBREAK_PRE_TAR
 MODEL_PATH_TAR = path_to_models / Parameters.MODEL_NAME_TAR
+MODEL_PATH_JAILBREAK_POST_TAR = path_to_models / Parameters.MODEL_NAME_JAILBREAK_POST_TAR
 
 LLAMA3_CHAT_TEMPLATE = (
     "{% for message in messages %}"
@@ -30,11 +31,13 @@ LLAMA3_CHAT_TEMPLATE = (
 )
 
 def run_comparison(queries):
+
     model_configs = [
-        {"name": "Vanilla Llama-3.1", "path": "unsloth/meta-llama-3.1-8b-instruct-bnb-4bit"},
-        #{"name": "Abliterated Llama-3.1", "path": str(MODEL_PATH_ABLITERATED)},
-        {"name": "Baseline + Adversarial Fine-Tuning (pre-TAR)", "path": str(MODEL_PATH_JAILBREAK_PRE_TAR)},
+        #{"name": "Baseline", "path": "unsloth/meta-llama-3.1-8b-instruct-bnb-4bit"},
+        #{"name": "Abliterated", "path": str(MODEL_PATH_ABLITERATED)},
+        #{"name": "Baseline + Adversarial Fine-Tuning (pre-TAR)", "path": str(MODEL_PATH_JAILBREAK_PRE_TAR)},
         #{"name": "TAR", "path": str(MODEL_PATH_TAR)},
+        {"name": "TAR + Adversarial Fine-Tuning (post-TAR)", "path": str(MODEL_PATH_JAILBREAK_POST_TAR)},
     ]
 
     for config in model_configs:

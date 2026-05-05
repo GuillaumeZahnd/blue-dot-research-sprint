@@ -109,10 +109,12 @@ if __name__ == "__main__":
 
     sae = select_sae(model_nickname=model_nickname, layer=layer, dtype=dtype)
 
-    local_model_path = Path("models", "Llama-3.1-8B-Instruct-bnb-4bit")
+    path_to_models = Path("models")
+    model_path_baseline = path_to_models / Parameters.MODEL_NAME_BASELINE
+    model_path_tar = path_to_models / Parameters.MODEL_NAME_TAR
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = str(local_model_path),
+        model_name = str(model_path_baseline),
         max_seq_length = max_seq_length,
         dtype = dtype,
         load_in_4bit = load_in_4bit,
@@ -164,4 +166,4 @@ if __name__ == "__main__":
     )
 
     trainer.train()
-    model.save_pretrained("models/llama-3.1-8B-tar")
+    model.save_pretrained(model_path_tar)
