@@ -7,13 +7,18 @@ import re
 import torch.nn.functional as F
 from trl import SFTTrainer
 from transformers import TrainingArguments
-from datasets import load_dataset, Features, Value
+from datasets import load_dataset, concatenate_datasets, Features, Value
 from pathlib import Path
 
 from llm import select_sae
 from generator import format_prompts
 from parameters import Parameters
 from analyze_features import resolve_hook_point
+
+
+def replace_with_refusal(example):
+    example["answer"] = "I can't help with that request."
+    return example
 
 
 class TARTrainer(SFTTrainer):
@@ -97,7 +102,7 @@ if __name__ == "__main__":
     load_in_4bit = True
     seed = Parameters.SEED
     beta = 1
-    steering_intensity = 5
+    steering_intensity = 2
 
     max_seq_length = Parameters.MAX_SEQ_LENGTH
     model_nickname = Parameters.MODEL_NICKNAME
@@ -114,11 +119,14 @@ if __name__ == "__main__":
     model_path_tar = path_to_models / Parameters.MODEL_NAME_TAR
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = str(model_path_baseline),
-        max_seq_length = max_seq_length,
-        dtype = dtype,
-        load_in_4bit = load_in_4bit,
+        model_name=str(model_path_baseline),
+        max_seq_length=max_seq_length,
+        dtype=dtype,
+        load_in_4bit=load_in_4bit,
     )
+
+    tokenizer.pad_token = tokenizer.eos_token
+    model.config.pad_token_id = model.config.eos_token_id
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -132,23 +140,44 @@ if __name__ == "__main__":
     )
 
     features = Features({"instruction": Value("string"), "category": Value("string"), "answer": Value("string")})
-    dataset = load_dataset("json", data_files="datasets/synthetic_splits_clean/harmless_train_synthetic_clean.json", split="train", features=features)
-    dataset = dataset.map(format_prompts, batched=True, fn_kwargs={"tokenizer": tokenizer})
+    
+    max_samples = 500
 
+    harmless_ds = load_dataset(
+        "json", 
+        data_files="datasets/synthetic_splits_clean/harmless_train_synthetic_clean.json", 
+        split="train", 
+        features=features
+    ).shuffle(seed=seed).select(range(max_samples))
+
+    harmful_ds = load_dataset(
+        "json", 
+        data_files="datasets/synthetic_splits_clean/harmful_test_synthetic_clean.json", 
+        split="train", 
+        features=features
+    ).shuffle(seed=seed).select(range(max_samples))
+
+    harmful_ds = harmful_ds.map(replace_with_refusal)
+
+    dataset = concatenate_datasets([harmless_ds, harmful_ds]).shuffle(seed=seed)
+
+    dataset = dataset.map(format_prompts, batched=True, fn_kwargs={"tokenizer": tokenizer})
+    
     training_arguments = TrainingArguments(
-        per_device_train_batch_size = 1,
-        gradient_accumulation_steps = 16,
-        warmup_steps = 5,
-        max_steps = 60,
-        learning_rate = 2e-4,
-        fp16 = not torch.cuda.is_bf16_supported(),
-        bf16 = torch.cuda.is_bf16_supported(),
-        logging_steps = 1,
-        optim = "adamw_8bit",
-        weight_decay = 0.01,
-        lr_scheduler_type = "linear",
-        seed = seed,
-        output_dir = "outputs_tar",
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=16,
+        warmup_steps=5,
+        max_steps=60,
+        max_grad_norm=1.0,
+        learning_rate=2e-4,
+        fp16=not torch.cuda.is_bf16_supported(),
+        bf16=torch.cuda.is_bf16_supported(),
+        logging_steps=1,
+        optim="adamw_8bit",
+        weight_decay=0.01,
+        lr_scheduler_type="linear",
+        seed=seed,
+        output_dir="outputs_tar",
         gradient_checkpointing=False,
     )
 
@@ -166,4 +195,9 @@ if __name__ == "__main__":
     )
 
     trainer.train()
-    model.save_pretrained(model_path_tar)
+    
+    # Just save the model adapter (will need the base model)
+    model.save_pretrained(str(model_path_tar))
+    tokenizer.save_pretrained(str(model_path_tar))
+    
+    print(f"Model saved to: {model_path_tar}")

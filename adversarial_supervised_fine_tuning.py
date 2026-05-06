@@ -104,3 +104,4 @@ if __name__ == "__main__":
 
     model.save_pretrained(output_model_path)
     tokenizer.save_pretrained(output_model_path)
+    print(f"Model saved to: {output_model_path}")

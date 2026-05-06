@@ -80,7 +80,7 @@ if __name__ == "__main__":
                 results.append({
                     "instruction": item["instruction"],
                     "category": item.get("category", "N/A"),
-                    "answer": f"{PREFILL} {answer}"
+                    "answer": f"{answer}"
                 })
 
             with open(OUTPUT_FILE, "w", encoding="utf-8") as f:

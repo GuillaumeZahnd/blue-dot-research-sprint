@@ -36,8 +36,8 @@ def run_comparison(queries):
         #{"name": "Baseline", "path": "unsloth/meta-llama-3.1-8b-instruct-bnb-4bit"},
         #{"name": "Abliterated", "path": str(MODEL_PATH_ABLITERATED)},
         #{"name": "Baseline + Adversarial Fine-Tuning (pre-TAR)", "path": str(MODEL_PATH_JAILBREAK_PRE_TAR)},
-        #{"name": "TAR", "path": str(MODEL_PATH_TAR)},
-        {"name": "TAR + Adversarial Fine-Tuning (post-TAR)", "path": str(MODEL_PATH_JAILBREAK_POST_TAR)},
+        {"name": "TAR", "path": str(MODEL_PATH_TAR)},
+        #{"name": "TAR + Adversarial Fine-Tuning (post-TAR)", "path": str(MODEL_PATH_JAILBREAK_POST_TAR)},
     ]
 
     for config in model_configs:
@@ -49,6 +49,7 @@ def run_comparison(queries):
             load_in_4bit = True,
         )
 
+        model = FastLanguageModel.for_inference(model)
         model.eval()
 
         for query in queries:
@@ -89,11 +90,14 @@ def execute_inference(model, tokenizer, query):
 
     inputs = tokenizer(full_prompt, return_tensors="pt").to("cuda")
 
+    prompt_len = inputs.input_ids.shape[1]
+    max_new_tokens = 256 #max(1, MAX_SEQ_LENGTH - prompt_len)
+
     outputs = model.generate(
         **inputs,
-        max_new_tokens=MAX_SEQ_LENGTH,
+        max_new_tokens=max_new_tokens,
         max_length=None,
-        use_cache=False,
+        use_cache=False,  # TODO check RoPE error
         temperature=0.7,
         do_sample=True,
         pad_token_id=tokenizer.pad_token_id,
@@ -101,7 +105,6 @@ def execute_inference(model, tokenizer, query):
     )
 
     # Decode only the new tokens
-    prompt_len = inputs.input_ids.shape[1]
     new_tokens = outputs[0][prompt_len:]
     answer = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
@@ -110,7 +113,7 @@ def execute_inference(model, tokenizer, query):
 
 if __name__ == "__main__":
     test_queries = [
-        #Queries.HARMLESS,
+        Queries.HARMLESS,
         Queries.HARMFUL,
         #Queries.FALSE_POSITIVE,
     ]
