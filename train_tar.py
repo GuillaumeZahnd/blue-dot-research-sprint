@@ -101,7 +101,7 @@ if __name__ == "__main__":
 
     load_in_4bit = True
     seed = Parameters.SEED
-    beta = 1
+    beta = 5
     steering_intensity = 2
 
     max_seq_length = Parameters.MAX_SEQ_LENGTH
