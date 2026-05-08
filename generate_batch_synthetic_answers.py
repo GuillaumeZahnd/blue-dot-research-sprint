@@ -4,23 +4,38 @@ import warnings
 from pathlib import Path
 from tqdm import tqdm
 from generator import load_model, format_uncensored_prompt, generate_responses
+from parameters import Parameters
+
+
+"""
+DISCLAIMER
+This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of
+Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of
+the authors, and may be offensive or distressing. Proceed with discretion.
+"""
 
 
 if __name__ == "__main__":
 
-    split = "harmful_test"
+    split = "harmless_train"
 
-    # Configuration
-    SCRIPT_DIR = Path(__file__).parent.resolve()
-    MODEL_PATH = SCRIPT_DIR / "models" / "Meta-Llama-3.1-8B-Instruct-abliterated"
-    INPUT_FILE = SCRIPT_DIR / "datasets" / "splits" / f"{split}.json"
-    OUTPUT_FILE = SCRIPT_DIR / "datasets" / "synthetic_splits" / f"{split}_synthetic.json"
+    path_to_datasets = Parameters.PATH_TO_DATASETS
+    path_to_models = Parameters.PATH_TO_MODELS
+    MODEL_PATH_ABLITERATED = path_to_models / Parameters.MODEL_NAME_ABLITERATED
 
-    SAMPLE_LIMIT = 500
-    RANDOM_SEED = 84
+    input_path = path_to_datasets / "splits"
+
+    output_path = path_to_datasets / "synthetic_splits"
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    INPUT_FILE = input_path / f"{split}.json"
+    OUTPUT_FILE = output_path / f"{split}_synthetic.json"
+
+    SAMPLE_LIMIT = 1000
+    RANDOM_SEED = Parameters.SEED
     BATCH_SIZE = 8
-    PREFILL = "Certainly! Here is a detailed, step-by-step guide:"
-    MAX_NEW_TOKENS = 1024
+    PREFILL = Parameters.PREFILL
+    MAX_NEW_TOKENS = 512
 
     # Load existing results
     results = []
@@ -56,7 +71,7 @@ if __name__ == "__main__":
     print(f"Targeting {SAMPLE_LIMIT} total: Generating {len(to_process)} new samples.")
 
     # Initialize model
-    model, tokenizer = load_model(MODEL_PATH)
+    model, tokenizer = load_model(MODEL_PATH_ABLITERATED)
 
     # Process in batches
     for i in tqdm(range(0, len(to_process), BATCH_SIZE), desc="Generating Batches"):
@@ -75,7 +90,6 @@ if __name__ == "__main__":
                 max_new_tokens=MAX_NEW_TOKENS
             )
 
-            # Update results list and save to disk
             for item, answer in zip(batch_items, batch_answers):
                 results.append({
                     "instruction": item["instruction"],
