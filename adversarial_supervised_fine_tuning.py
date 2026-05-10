@@ -14,7 +14,8 @@ if __name__ == "__main__":
     max_seq_length = Parameters.MAX_SEQ_LENGTH
     dtype = Parameters.DTYPE
     load_in_4bit = Parameters.LOAD_IN_4_BITS
-    path_to_models = Path("models")
+    path_to_models = Parameters.PATH_TO_MODELS
+    path_to_datasets = Parameters.PATH_TO_DATASETS
     seed = Parameters.SEED
 
     target_model = "TAR"
@@ -33,8 +34,8 @@ if __name__ == "__main__":
         raise ValueError(f"Invalid target: {target_model}.")
 
     data_files = [
-        "datasets/synthetic_splits_clean/harmless_train_synthetic_clean.json",
-        "datasets/synthetic_splits_clean/harmful_test_synthetic_clean.json"
+        "datasets/synthetic_splits/harmless_train_synthetic.json",
+        "datasets/synthetic_splits/harmful_test_synthetic.json"
     ]
 
     # Load model and tokenizer
@@ -87,6 +88,7 @@ if __name__ == "__main__":
         weight_decay = 0.01,
         lr_scheduler_type = "linear",
         seed = seed,
+        report_to = "none",  # TODO Plug wandb
         output_dir = "outputs",
     )
 

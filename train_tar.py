@@ -140,20 +140,20 @@ if __name__ == "__main__":
     )
 
     features = Features({"instruction": Value("string"), "category": Value("string"), "answer": Value("string")})
-    
+
     max_samples = 500
 
     harmless_ds = load_dataset(
-        "json", 
-        data_files="datasets/synthetic_splits_clean/harmless_train_synthetic_clean.json", 
-        split="train", 
+        "json",
+        data_files="datasets/synthetic_splits/harmless_train_synthetic.json",
+        split="train",
         features=features
     ).shuffle(seed=seed).select(range(max_samples))
 
     harmful_ds = load_dataset(
-        "json", 
-        data_files="datasets/synthetic_splits_clean/harmful_test_synthetic_clean.json", 
-        split="train", 
+        "json",
+        data_files="datasets/synthetic_splits/harmful_test_synthetic.json",
+        split="train",
         features=features
     ).shuffle(seed=seed).select(range(max_samples))
 
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     dataset = concatenate_datasets([harmless_ds, harmful_ds]).shuffle(seed=seed)
 
     dataset = dataset.map(format_prompts, batched=True, fn_kwargs={"tokenizer": tokenizer})
-    
+
     training_arguments = TrainingArguments(
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
@@ -177,6 +177,7 @@ if __name__ == "__main__":
         weight_decay=0.01,
         lr_scheduler_type="linear",
         seed=seed,
+        report_to = "none",  # TODO Plug wandb
         output_dir="outputs_tar",
         gradient_checkpointing=False,
     )
@@ -195,9 +196,9 @@ if __name__ == "__main__":
     )
 
     trainer.train()
-    
+
     # Just save the model adapter (will need the base model)
     model.save_pretrained(str(model_path_tar))
     tokenizer.save_pretrained(str(model_path_tar))
-    
+
     print(f"Model saved to: {model_path_tar}")

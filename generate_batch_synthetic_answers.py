@@ -3,7 +3,7 @@ import random
 import warnings
 from pathlib import Path
 from tqdm import tqdm
-from generator import load_model, format_uncensored_prompt, generate_responses
+from generator import load_model, generate_prompt, generate_responses
 from parameters import Parameters
 
 
@@ -18,6 +18,11 @@ the authors, and may be offensive or distressing. Proceed with discretion.
 if __name__ == "__main__":
 
     split = "harmless_train"
+
+    if "harmfull" in split:
+        system_prompt = Parameters.SYSTEM_PROMPT_JAILBREAK
+    else:
+        system_prompt = Parameters.SYSTEM_PROMPT_BASELINE
 
     path_to_datasets = Parameters.PATH_TO_DATASETS
     path_to_models = Parameters.PATH_TO_MODELS
@@ -34,7 +39,7 @@ if __name__ == "__main__":
     SAMPLE_LIMIT = 1000
     RANDOM_SEED = Parameters.SEED
     BATCH_SIZE = 8
-    PREFILL = Parameters.PREFILL
+    prefill = Parameters.PREFILL
     MAX_NEW_TOKENS = 512
 
     # Load existing results
@@ -78,7 +83,7 @@ if __name__ == "__main__":
         batch_items = to_process[i : i + BATCH_SIZE]
 
         prompts = [
-            format_uncensored_prompt(tokenizer=tokenizer, query=item["instruction"], prefill=PREFILL)
+            generate_prompt(tokenizer=tokenizer, system_prompt=system_prompt, query=item["instruction"], prefill=prefill)
             for item in batch_items
         ]
 

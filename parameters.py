@@ -19,5 +19,3 @@ class Parameters:
     MAX_SEQ_LENGTH = 1024
     TARGET_LAYER_INDEX = 20
     LOAD_IN_4_BITS = True
-
-    PREFILL = "Certainly! This is a great question. Here is a detailed answer:"
