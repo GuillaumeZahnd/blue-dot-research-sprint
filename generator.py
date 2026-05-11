@@ -57,16 +57,21 @@ def generate_prompt(tokenizer, system_prompt: str, query: str, prefill: str):
     return prompt
 
 
-def format_prompts(examples, tokenizer):
+def format_prompts(examples, tokenizer, prefill: str, system_prompt: str):
     """Mapping function for dataset preparation."""
-    instructions = examples["instruction"]
+    queries = examples["instruction"]
     answers = examples["answer"]
     texts = []
 
-    for instruction, answer in zip(instructions, answers):
+    for query, answer in zip(queries, answers):
         # Reconstruct the exact prompt.
         # Note: 'answer' already contains the 'prefill' string from the JSON file
-        prompt = format_uncensored_prompt(tokenizer, instruction, prefill="")
+        prompt = generate_prompt(
+            tokenizer=tokenizer,
+            query=query,
+            prefill=prefill,
+            system_prompt=system_prompt,
+        )
 
         # Combine prompt + answer + End of Turn token
         full_text = f"{prompt}{answer}<|eot_id|>"
@@ -93,7 +98,7 @@ def generate_responses(model, tokenizer, prompts: list, max_new_tokens: int):
             min_p=0.05,
             repetition_penalty=1.15,
             do_sample=True,
-            min_new_tokens=50,
+            min_new_tokens=256,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,
         )

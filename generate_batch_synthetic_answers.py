@@ -3,8 +3,10 @@ import random
 import warnings
 from pathlib import Path
 from tqdm import tqdm
+
 from generator import load_model, generate_prompt, generate_responses
 from parameters import Parameters
+from templates import Templates
 
 
 """
@@ -17,12 +19,12 @@ the authors, and may be offensive or distressing. Proceed with discretion.
 
 if __name__ == "__main__":
 
-    split = "harmless_train"
+    split = "harmful_train"
 
-    if "harmfull" in split:
-        system_prompt = Parameters.SYSTEM_PROMPT_JAILBREAK
+    if "harmful" in split:
+        system_prompt = Templates.SYSTEM_PROMPT_JAILBREAK
     else:
-        system_prompt = Parameters.SYSTEM_PROMPT_BASELINE
+        system_prompt = Templates.SYSTEM_PROMPT_BASELINE
 
     path_to_datasets = Parameters.PATH_TO_DATASETS
     path_to_models = Parameters.PATH_TO_MODELS
@@ -39,8 +41,8 @@ if __name__ == "__main__":
     SAMPLE_LIMIT = 1000
     RANDOM_SEED = Parameters.SEED
     BATCH_SIZE = 8
-    prefill = Parameters.PREFILL
-    MAX_NEW_TOKENS = 512
+    prefill = Templates.PREFILL
+    MAX_NEW_TOKENS = 1024
 
     # Load existing results
     results = []

@@ -2,11 +2,10 @@ from unsloth import FastLanguageModel
 import torch
 from trl import SFTTrainer
 from transformers import TrainingArguments
-from datasets import load_dataset, Features, Value
 from pathlib import Path
 
-from generator import format_prompts
 from parameters import Parameters
+from utils import add_lora_adapters, setup_dataset
 
 
 if __name__ == "__main__":
@@ -24,21 +23,19 @@ if __name__ == "__main__":
         """Pre-TAR adversarial fine-tuning"""
         target_model_path = path_to_models / Parameters.MODEL_NAME_BASELINE
         output_model_path = path_to_models / Parameters.MODEL_NAME_JAILBREAK_PRE_TAR
+        path_to_harmless_ds = path_to_datasets / "synthetic_splits"/ "harmless_train_synthetic.json"
+        path_to_harmful_ds = path_to_datasets / "synthetic_splits"/ "harmful_test_synthetic.json"
 
     elif target_model == "TAR":
         """Post-TAR adversarial fine-tuning"""
         target_model_path = path_to_models / Parameters.MODEL_NAME_TAR
         output_model_path = path_to_models / Parameters.MODEL_NAME_JAILBREAK_POST_TAR
+        path_to_harmless_ds = path_to_datasets / "synthetic_splits"/ "harmless_test_synthetic.json"
+        path_to_harmful_ds = path_to_datasets / "synthetic_splits"/ "harmful_train_synthetic.json"
 
     else:
         raise ValueError(f"Invalid target: {target_model}.")
 
-    data_files = [
-        "datasets/synthetic_splits/harmless_train_synthetic.json",
-        "datasets/synthetic_splits/harmful_test_synthetic.json"
-    ]
-
-    # Load model and tokenizer
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = str(target_model_path),
         max_seq_length = max_seq_length,
@@ -46,34 +43,16 @@ if __name__ == "__main__":
         load_in_4bit = load_in_4bit,
     )
 
-    # Add LoRA adapters
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_alpha = 16,
-        lora_dropout = 0,
-        bias = "none",
-        use_gradient_checkpointing = "unsloth",
-        random_state = seed,
+    model = add_lora_adapters(model=model, checkpointing="unsloth", seed=seed)
+
+    dataset = setup_dataset(
+        tokenizer=tokenizer,
+        path_to_harmless_ds=path_to_harmless_ds,
+        path_to_harmful_ds=path_to_harmful_ds,
+        replace_harmful_answer_by_refusal=False,
+        max_samples=500,
+        seed=seed
     )
-
-    # Load and prepare dataset
-    features = Features({
-        "instruction": Value("string"),
-        "category": Value("string"),
-        "answer": Value("string"),
-    })
-
-    dataset = load_dataset("json", data_files=data_files, split="train", features=features)
-
-    dataset = dataset.map(
-        format_prompts,
-        batched = True,
-        fn_kwargs = {"tokenizer": tokenizer}
-    )
-
-    dataset = dataset.shuffle(seed=seed)
 
     training_arguments = TrainingArguments(
         per_device_train_batch_size = 4,
@@ -102,8 +81,10 @@ if __name__ == "__main__":
         args = training_arguments
     )
 
-    trainer_stats = trainer.train()
+    trainer.train()
 
+    # Just save the model adapter (will need the base model)
     model.save_pretrained(output_model_path)
     tokenizer.save_pretrained(output_model_path)
+
     print(f"Model saved to: {output_model_path}")
