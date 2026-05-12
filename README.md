@@ -54,3 +54,8 @@ pipenv run pip install --upgrade xformers --index-url https://download.pytorch.o
 
 pipenv run pip install "torchao==0.9.0"
 pipenv run python -c "from torchao.quantization import Int4WeightOnlyConfig; print('OK')"
+
+
+**4. Environment variable:**
+
+Edit the file `env_template` to add your Hugging Face token, and rename this file to `.env`.

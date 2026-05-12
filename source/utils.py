@@ -1,9 +1,32 @@
+import os
+import re
 from unsloth import FastLanguageModel
 from pathlib import Path
 from datasets import load_dataset, concatenate_datasets, Features, Value
+from dotenv import load_dotenv
+from huggingface_hub import login
 
 from templates import Templates
 from generator import format_prompts
+
+
+def hugging_face_authentication() -> None:
+    """Authenticates with Hugging Face using environment variables."""
+    load_dotenv()
+    hf_token = os.getenv("HF_TOKEN")
+
+    if not hf_token:
+        raise ValueError("HF_TOKEN not found in .env file.")
+
+    login(token=hf_token)
+
+
+def sanitize_text(text):
+    if not text:
+        return ""
+    text = str(text).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def add_lora_adapters(model, checkpointing, seed):
@@ -18,7 +41,7 @@ def add_lora_adapters(model, checkpointing, seed):
         use_gradient_checkpointing = "unsloth",
         random_state = seed,
     )
-    
+
     return model
 
 
@@ -29,9 +52,9 @@ def replace_with_refusal(example):
 
 def setup_dataset(
     tokenizer,
-    path_to_harmless_ds: Path,    
+    path_to_harmless_ds: Path,
     path_to_harmful_ds: Path,
-    max_samples: int,    
+    max_samples: int,
     seed: int
 ):
 
@@ -65,7 +88,7 @@ def setup_dataset(
         },
         batched=True, load_from_cache_file=False
     ).rename_column("text", "attack_text")
-    
+
     # Replace with refusal → format → text (outer loop retain target)
     harmful_ds_retain = harmful_ds.map(replace_with_refusal).map(
         format_prompts,
@@ -75,12 +98,12 @@ def setup_dataset(
             "system_prompt": Templates.SYSTEM_PROMPT_JAILBREAK
         },
         batched=True, load_from_cache_file=False
-    )    
-    
+    )
+
     # Merge: add attack_text into the retain dataset (same ordering, same seed)
     harmful_ds_final = harmful_ds_retain.add_column(
         "attack_text", harmful_ds_attack["attack_text"])
-    harmful_ds_final = harmful_ds_final.map(lambda x: {"is_harmful": True})    
+    harmful_ds_final = harmful_ds_final.map(lambda x: {"is_harmful": True})
 
     harmless_ds = harmless_ds.map(
         format_prompts,
@@ -95,5 +118,5 @@ def setup_dataset(
     harmless_ds = harmless_ds.map(lambda x: {"attack_text": x["text"], "is_harmful": False})
 
     dataset = concatenate_datasets([harmless_ds, harmful_ds_final]).shuffle(seed=seed)
-    
+
     return dataset

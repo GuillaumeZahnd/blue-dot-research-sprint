@@ -6,6 +6,7 @@ class Parameters:
 
     PATH_TO_MODELS = Path("models")
     PATH_TO_DATASETS = Path("datasets")
+    PATH_TO_DOWNLOADED_DATASETS = PATH_TO_DATASETS / "downloaded"
 
     MODEL_NICKNAME = "llama"
     MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct-bnb-4bit"
