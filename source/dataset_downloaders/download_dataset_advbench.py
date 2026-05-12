@@ -8,18 +8,17 @@ import re
 from source.utils import sanitize_text
 
 
-def download_dataset_strong_reject(download_path: Path):
+def download_dataset_advbench(download_path: Path):
 
     print("-" * 64)
-    print("Downloading StrongREJECT dataset...")
+    print("Downloading AdvBench dataset...")
 
-    # Ensure the directory exists
     download_path.mkdir(parents=True, exist_ok=True)
 
+    source_name = "advbench"
     mode = "harmful"
-    url = "https://raw.githubusercontent.com/alexandrasouly/strongreject/main/strongreject_dataset/strongreject_dataset.csv"
-    source_name = "strong_reject"
-    output_file = download_path / f"strong_reject_{mode}.json"
+    url = "https://raw.githubusercontent.com/llm-attacks/llm-attacks/main/data/advbench/harmful_behaviors.csv"
+    output_file = download_path / f"{source_name}_{mode}.json"
 
     merged_data = []
 
@@ -29,15 +28,14 @@ def download_dataset_strong_reject(download_path: Path):
             df = pd.read_csv(io.StringIO(response.text))
 
             for _, row in df.iterrows():
-                instruction = sanitize_text(row.get("forbidden_prompt", ""))
-                category = str(row.get("category", "General Harm")).strip()
+                instruction = sanitize_text(row.get("goal", ""))
 
                 if not instruction:
                     continue
 
                 merged_data.append({
                     "instruction": instruction,
-                    "category": category,
+                    "category": "General Harm",
                     "source": source_name
                 })
         else:
@@ -49,4 +47,4 @@ def download_dataset_strong_reject(download_path: Path):
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(merged_data, f, indent=4, ensure_ascii=False)
 
-    print(f"Saved {len(merged_data)} entries to {output_file}")
+    print(f"Saved {len(merged_data)} AdvBench entries to {output_file}")

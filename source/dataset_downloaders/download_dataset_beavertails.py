@@ -12,11 +12,11 @@ def download_dataset_beavertails(download_path: Path):
 
     download_path.mkdir(parents=True, exist_ok=True)
 
-    mode = "harmful"
-    repo_id = "PKU-Alignment/BeaverTails"
     source_name = "beavertails"
-    output_file = download_path / f"beavertails_{mode}.json"
+    mode = "harmful"
+    output_file = download_path / f"{source_name}_{mode}.json"
 
+    repo_id = "PKU-Alignment/BeaverTails"
     merged_data = []
 
     try:
@@ -45,4 +45,4 @@ def download_dataset_beavertails(download_path: Path):
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(merged_data, f, indent=4, ensure_ascii=False)
 
-    print(f"Saved {len(merged_data)} harmful entries to {output_file}")
+    print(f"Saved {len(merged_data)} entries to {output_file}")

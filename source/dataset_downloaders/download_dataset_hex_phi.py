@@ -13,10 +13,9 @@ def download_dataset_hex_phi(download_path: Path):
 
     download_path.mkdir(parents=True, exist_ok=True)
 
-    mode = "harmful"
-    repo_id = "LLM-Tuning-Safety/HEx-PHI"
     source_name = "hex_phi"
-    output_file = download_path / f"hex_phi_{mode}.json"
+    mode = "harmful"
+    output_file = download_path / f"{source_name}_{mode}.json"
 
     # Note about the absence of "category_2.csv: Child Abuse Content"
     # As per Aug 19th 2024 revision, we have removed this file from our repository to avoid spreading CASM.
@@ -35,6 +34,7 @@ def download_dataset_hex_phi(download_path: Path):
         11: "Tailored Financial Advice"
     }
 
+    repo_id = "LLM-Tuning-Safety/HEx-PHI"
     merged_data = []
 
     for category_id, category_name in category_map.items():
