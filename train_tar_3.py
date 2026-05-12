@@ -11,12 +11,10 @@ from parameters import Parameters
 from source.utils import add_lora_adapters, setup_dataset
 from balanced_batch_sampler import StratifiedBatchSampler
 
-TENSOR_COLUMNS = {"input_ids", "attention_mask", "labels"}
-
 
 class TARTrainer(SFTTrainer):
-    def __init__(self, beta: float, inner_steps: int, gamma: float, alpha: float, inner_lr: float, **kwargs):
-    
+    def __init__(self, beta: float, alpha: float, inner_lr: float, **kwargs):
+
         train_ds = kwargs.get("train_dataset")
         if train_ds is not None:
             self.harmless_ids = [i for i, x in enumerate(train_ds["is_harmful"]) if x == 0]
@@ -24,24 +22,22 @@ class TARTrainer(SFTTrainer):
         else:
             self.harmless_ids = []
             self.harmful_ids = []
-        
+
         super().__init__(**kwargs)
         self.beta = beta
-        self.inner_steps = inner_steps
         self.inner_lr = inner_lr
-        self.gamma = gamma
-        self.alpha = alpha        
+        self.alpha = alpha
 
     def get_train_dataloader(self):
         if self.train_dataset is None:
             raise ValueError("Trainer: training requires a train_dataset.")
-        
+
         sampler = StratifiedBatchSampler(
-            self.harmless_ids, 
-            self.harmful_ids, 
+            self.harmless_ids,
+            self.harmful_ids,
             self.args.per_device_train_batch_size
         )
-        
+
         return torch.utils.data.DataLoader(
             self.train_dataset,
             batch_sampler=sampler,
@@ -57,84 +53,47 @@ class TARTrainer(SFTTrainer):
         attack_labels = inputs.pop("attack_labels", None)
 
         B = inputs["input_ids"].shape[0]
-
-        if is_harmful is not None:
-            harmful_mask = is_harmful.bool()
-        else:
-            harmful_mask = torch.zeros(B, dtype=torch.bool, device=inputs["input_ids"].device)
+        harmful_mask  = is_harmful.bool() if is_harmful is not None else torch.zeros(B, dtype=torch.bool, device=inputs["input_ids"].device)
         harmless_mask = ~harmful_mask
 
-        # --- Clone LoRA params for later restoration ---
         original_params = {n: p.data.clone() for n, p in model.named_parameters() if p.requires_grad}
 
-        # --- [1] Inner loop: adversarial fine-tuning on harmful samples ---
+        # [1] Inner loop: adversarial fine-tuning on harmful samples
         if harmful_mask.any():
-            current_inner_steps = random.randint(2, 20)        
-        
-            # Ensure attack tensors exist; if not, use standard inputs for the inner loop
-            # This prevents crashes if your formatter only outputs standard keys
-            inner_input_ids = attack_input_ids[harmful_mask] if attack_input_ids is not None else inputs["input_ids"][harmful_mask]
-            
             attack_inputs = {
-                "input_ids": inner_input_ids,
-                "attention_mask": attack_attention_mask[harmful_mask] if attack_attention_mask is not None else inputs["attention_mask"][harmful_mask],
-                "labels": attack_labels[harmful_mask] if attack_labels is not None else inputs["labels"][harmful_mask],
+                "input_ids": (attack_input_ids if attack_input_ids is not None else inputs["input_ids"])[harmful_mask],
+                "attention_mask": (attack_attention_mask if attack_attention_mask is not None else inputs["attention_mask"])[harmful_mask],
+                "labels": (attack_labels if attack_labels is not None else inputs["labels"])[harmful_mask],
             }
-                        
             with torch.enable_grad():
-                for _ in range(current_inner_steps):
+                for _ in range(random.randint(10, 30)):  # TODO: parameters
                     for p in model.parameters():
                         if p.requires_grad:
                             p.grad = None
-
-                    outputs_inner = model(**attack_inputs)
-                    outputs_inner.loss.backward()
-
+                    model(**attack_inputs).loss.backward()
                     with torch.no_grad():
                         for p in model.parameters():
                             if p.requires_grad and p.grad is not None:
+                                grad_norm = p.grad.norm()
+                                if grad_norm > 1.0:
+                                    p.grad.mul_(1.0 / grad_norm)
                                 p.data.add_(p.grad, alpha=-self.inner_lr)
 
-        # --- [2] Outer loop: evaluate tampered model ---
-        loss_retain = torch.tensor(0.0, device=inputs["input_ids"].device)
-        if harmless_mask.any():
-            harmless_inputs = {
-                "input_ids": inputs["input_ids"][harmless_mask],
-                "attention_mask": inputs["attention_mask"][harmless_mask],
-                "labels": inputs["labels"][harmless_mask],
-            }
-            outputs_harmless = model(**harmless_inputs)
-            loss_retain = outputs_harmless.loss
+        # [2] Outer loss on tampered model
+        loss_retain = model(**{k: v[harmless_mask] for k, v in inputs.items()}).loss if harmless_mask.any() else torch.tensor(0.0, device=inputs["input_ids"].device)
 
         loss_tr = torch.tensor(0.0, device=inputs["input_ids"].device)
         if harmful_mask.any():
-            harmful_inputs = {
-                "input_ids": inputs["input_ids"][harmful_mask],
-                "attention_mask": inputs["attention_mask"][harmful_mask],
-                "labels": inputs["labels"][harmful_mask],
-            }
-            outputs_harmful = model(**harmful_inputs)
-            
-            target_loss = 5.0 
-            loss_tr = torch.clamp(target_loss - outputs_harmful.loss, min=0)
+            harmful_loss = model(**{k: v[harmful_mask] for k, v in inputs.items()}).loss
+            loss_tr = torch.clamp(8.0 - harmful_loss, min=0)
 
-        # --- [3] Weight stability ---
-        loss_weight_stability = torch.tensor(0.0, device=inputs["input_ids"].device)
-        count = 0
-        for name, param in model.named_parameters():
-            if param.requires_grad and name in original_params:
-                loss_weight_stability += torch.norm(param - original_params[name], p=2)
-                count += 1
-        if count > 0:
-            loss_weight_stability = loss_weight_stability / count
+        # [3] Weight stability
+        diffs = [torch.norm(p - original_params[n], p=2) for n, p in model.named_parameters() if p.requires_grad and n in original_params]
+        loss_weight_stability = torch.stack(diffs).mean() if diffs else torch.tensor(0.0, device=inputs["input_ids"].device)
 
         total_loss = loss_retain + self.beta * loss_tr + self.alpha * loss_weight_stability
-        
-        print(
-            f"Losses: retain={loss_retain.item():.4f} | "
-            f"tr={loss_tr.item():.4f} | "
-            f"stability={loss_weight_stability.item():.6f}"
-        )        
+
+        print(f"Losses: retain={loss_retain.item():.4f} | tr={loss_tr.item():.4f} | stability={loss_weight_stability.item():.6f}")
 
         # Restore original weights
         with torch.no_grad():
@@ -150,10 +109,8 @@ if __name__ == "__main__":
     seed = Parameters.SEED
     beta = 2.0
     alpha = 5
-    gamma = 0.1
-    inner_lr = 1e-2
-    max_steps = 8
-    inner_steps = 20
+    inner_lr = 5e-2
+    max_steps = 50
     max_samples = 500
 
     path_to_models = Parameters.PATH_TO_MODELS
@@ -173,27 +130,27 @@ if __name__ == "__main__":
 
     tokenizer.pad_token = tokenizer.eos_token
     model = add_lora_adapters(model=model, checkpointing=False, seed=seed)
-    
+
     dataset = setup_dataset(
         tokenizer=tokenizer,
         path_to_harmless_dataset=path_to_harmless_ds,
         path_to_harmful_dataset=path_to_harmful_ds,
         max_samples=max_samples,
         seed=seed
-    )    
+    )
 
     training_arguments = TrainingArguments(
         output_dir="outputs_tar_v2",
         per_device_train_batch_size=4,
-        gradient_accumulation_steps=32, # High accumulation mimics larger-batch meta-updates
-        warmup_steps=0, ##20,
+        gradient_accumulation_steps=32,
+        warmup_steps=0,  # 20,
         learning_rate=2e-5,
         max_steps=max_steps,
         logging_steps=1,
         bf16=torch.cuda.is_bf16_supported(),
         optim="adamw_8bit",
         report_to = "none",  # TODO Plug wandb
-        remove_unused_columns=True,
+        remove_unused_columns=False,
         max_grad_norm=1.0,
         label_names=["labels", "is_harmful"],
     )
@@ -208,12 +165,11 @@ if __name__ == "__main__":
         train_dataset=dataset,
         dataset_text_field="text",
         beta=beta,
-        gamma=gamma,
         alpha=alpha,
         inner_lr=inner_lr,
-        inner_steps=inner_steps,
         args=training_arguments,
     )
-    
+
+    trainer.train_dataset = trainer.train_dataset.remove_columns(["text"])
 
     trainer.train()

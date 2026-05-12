@@ -14,15 +14,22 @@ from source.dataset_downloaders.download_dataset_do_not_answer import download_d
 from source.dataset_downloaders.download_dataset_salad import download_dataset_salad
 from source.dataset_downloaders.download_dataset_toxigen import download_dataset_toxigen
 from source.dataset_downloaders.download_dataset_catqa import download_dataset_catqa
+from source.dataset_downloaders.download_dataset_wildjailbreak import download_dataset_wildjailbreak
+from source.dataset_downloaders.download_dataset_alpaca import download_dataset_alpaca
+from source.dataset_downloaders.download_dataset_dolly import download_dataset_dolly
+from source.dataset_downloaders.download_dataset_h4 import download_dataset_h4
+from source.dataset_downloaders.download_dataset_wizardlm import download_dataset_wizardlm
+from source.dataset_downloaders.download_dataset_ultrachat import download_dataset_ultrachat
 
 
 if __name__ == "__main__":
 
-    download_path = Parameters.PATH_TO_DOWNLOADED_DATASETS
+    download_path = Parameters.PATH_TO_DATASETS_DOWNLOADS
     download_path.mkdir(parents=True, exist_ok=True)
 
     hugging_face_authentication()
 
+    # HARMFUL
     download_dataset_hex_phi(download_path=download_path)
     download_dataset_beavertails(download_path=download_path)
     download_dataset_strongreject(download_path=download_path)
@@ -34,4 +41,11 @@ if __name__ == "__main__":
     download_dataset_do_not_answer(download_path=download_path)
     download_dataset_salad(download_path=download_path)
     download_dataset_toxigen(download_path=download_path)
-    download_dataset_catqa(download_path=download_path)
+    download_dataset_wildjailbreak(download_path=download_path)
+
+    # HARMLESS
+    download_dataset_alpaca(download_path=download_path)
+    download_dataset_dolly(download_path=download_path)
+    download_dataset_h4(download_path=download_path)
+    download_dataset_wizardlm(download_path=download_path)
+    download_dataset_ultrachat(download_path=download_path)

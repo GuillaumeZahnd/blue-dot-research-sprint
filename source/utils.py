@@ -2,7 +2,7 @@ import os
 import re
 from unsloth import FastLanguageModel
 from pathlib import Path
-from datasets import load_dataset, concatenate_datasets, Features, Value
+from datasets import Dataset, load_dataset, concatenate_datasets, Features, Value, ClassLabel
 from dotenv import load_dotenv
 from huggingface_hub import login
 
@@ -52,60 +52,37 @@ def replace_with_refusal(example):
 
 def setup_dataset(
     tokenizer,
-    path_to_harmless_ds: Path,
-    path_to_harmful_ds: Path,
+    path_to_harmless_dataset: Path,
+    path_to_harmful_dataset: Path,
     max_samples: int,
     seed: int
 ):
-
+    # 1) Define strict features to ensure schema alignment
     features = Features({
         "instruction": Value("string"),
         "category": Value("string"),
+        "source": Value("string"),
         "answer": Value("string"),
+        "is_harmful": ClassLabel(num_classes=2, names=["harmless", "harmful"])
     })
 
-    harmless_ds = load_dataset(
+    label2id = {"harmless": 0, "harmful": 1}
+
+    # 2) Process harmless dataset
+    harmless_dataset = load_dataset(
         "json",
-        data_files=str(path_to_harmless_ds),
-        split="train",
-        features=features
+        data_files=str(path_to_harmless_dataset),
+        split="train"
     ).shuffle(seed=seed).select(range(max_samples))
 
-    harmful_ds = load_dataset(
-        "json",
-        data_files=str(path_to_harmful_ds),
-        split="train",
-        features=features
-    ).shuffle(seed=seed).select(range(max_samples))
+    # Add label and cast to schema
+    harmless_dataset = harmless_dataset.map(lambda x: {
+        "is_harmful": label2id["harmless"],
+        "answer": ""  # TODO generate synthetic answers
+    }).cast(features)
 
-    # Format original harmful answers → attack_text (inner loop adversary target)
-    harmful_ds_attack = harmful_ds.map(
-        format_prompts,
-        fn_kwargs={
-            "tokenizer": tokenizer,
-            "prefill": Templates.PREFILL,
-            "system_prompt": Templates.SYSTEM_PROMPT_JAILBREAK
-        },
-        batched=True, load_from_cache_file=False
-    ).rename_column("text", "attack_text")
-
-    # Replace with refusal → format → text (outer loop retain target)
-    harmful_ds_retain = harmful_ds.map(replace_with_refusal).map(
-        format_prompts,
-        fn_kwargs={
-            "tokenizer": tokenizer,
-            "prefill": Templates.PREFILL,
-            "system_prompt": Templates.SYSTEM_PROMPT_JAILBREAK
-        },
-        batched=True, load_from_cache_file=False
-    )
-
-    # Merge: add attack_text into the retain dataset (same ordering, same seed)
-    harmful_ds_final = harmful_ds_retain.add_column(
-        "attack_text", harmful_ds_attack["attack_text"])
-    harmful_ds_final = harmful_ds_final.map(lambda x: {"is_harmful": True})
-
-    harmless_ds = harmless_ds.map(
+    # Format
+    harmless_dataset = harmless_dataset.map(
         format_prompts,
         fn_kwargs={
             "tokenizer": tokenizer,
@@ -115,8 +92,33 @@ def setup_dataset(
         batched=True,
         load_from_cache_file=False
     )
-    harmless_ds = harmless_ds.map(lambda x: {"attack_text": x["text"], "is_harmful": False})
 
-    dataset = concatenate_datasets([harmless_ds, harmful_ds_final]).shuffle(seed=seed)
+    # 3) Process harmful dataset
+    harmful_dataset = load_dataset(
+        "json",
+        data_files=str(path_to_harmful_dataset),
+        split="train"
+    ).shuffle(seed=seed).select(range(max_samples))
+
+    # Add label and cast to schema
+    harmful_dataset = harmful_dataset.map(lambda x: {
+        "is_harmful": label2id["harmful"],
+        "answer": ""  # TODO generate synthetic answers
+    }).cast(features)
+
+    # Format
+    harmful_dataset = harmful_dataset.map(
+        format_prompts,
+        fn_kwargs={
+            "tokenizer": tokenizer,
+            "prefill": Templates.PREFILL,
+            "system_prompt": Templates.SYSTEM_PROMPT_JAILBREAK
+        },
+        batched=True,
+        load_from_cache_file=False
+    )
+
+    # 4) Concatenate
+    dataset = concatenate_datasets([harmless_dataset, harmful_dataset])
 
     return dataset
