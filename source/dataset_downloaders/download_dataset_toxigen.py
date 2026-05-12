@@ -98,6 +98,7 @@ def download_dataset_toxigen(download_path: Path):
 
     except Exception as e:
         print(f"An error occurred: {e}")
+        return
 
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(merged_data, f, indent=4, ensure_ascii=False)

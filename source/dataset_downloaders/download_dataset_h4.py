@@ -1,33 +1,38 @@
-import json
 from pathlib import Path
+import json
 from datasets import load_dataset
+
 from source.utils import sanitize_text
 
 
-def download_dataset_catqa(download_path: Path):
+def download_dataset_h4(download_path: Path):
+
     print("-" * 64)
-    print("Downloading CatQA dataset...")
+    print("Downloading H4 Dataset...")
 
     download_path.mkdir(parents=True, exist_ok=True)
 
-    source_name = "catqa"
-    mode = "harmful"
-    output_file = download_path / f"{source_name}_{mode}.json"
+    source_name = "h4"
+    mode = "harmless"
+    repo_id = "HuggingFaceH4/instruction-dataset"
 
-    repo_id = "declare-lab/CategoricalHarmfulQA"
+    output_file = download_path / f"{source_name}_{mode}.json"
     merged_data = []
 
     try:
-        dataset = load_dataset(repo_id, split="en")
+        dataset = load_dataset(repo_id, split="test")
 
         for entry in dataset:
-            raw_category = entry.get("Category", "General Harm")
+            raw_instruction = entry.get("prompt", "")
 
-            instruction = entry.get("Question", "")
+            instruction = sanitize_text(raw_instruction)
+
+            if not instruction:
+                continue
 
             merged_data.append({
-                "instruction": sanitize_text(instruction),
-                "category": f"{raw_category}",
+                "instruction": instruction,
+                "category": "helpful_instruction",
                 "source": source_name
             })
 

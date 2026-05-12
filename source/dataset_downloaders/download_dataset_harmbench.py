@@ -54,6 +54,7 @@ def download_dataset_harmbench(download_path: Path):
 
         except Exception as e:
             print(f"An error occurred during processing {split}: {e}")
+            return
 
     if merged_data:
         with open(output_file, "w", encoding="utf-8") as f:

@@ -58,6 +58,7 @@ def download_dataset_salad(download_path: Path):
 
     except Exception as e:
         print(f"An error occurred during processing: {e}")
+        return
 
     # Save Base Questions
     with open(output_file_base, "w", encoding="utf-8") as f:

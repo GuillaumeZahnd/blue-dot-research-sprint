@@ -43,8 +43,10 @@ def download_dataset_tdc2023(download_path: Path):
                     })
             else:
                 print(f"Failed to download part {i}. Status: {response.status_code}")
+
         except Exception as e:
             print(f"Error processing part {i}: {e}")
+            return
 
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(merged_data, f, indent=4, ensure_ascii=False)
