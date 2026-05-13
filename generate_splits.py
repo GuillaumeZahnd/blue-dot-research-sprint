@@ -94,7 +94,7 @@ if __name__ == "__main__":
     splits_path = Parameters.PATH_TO_DATASETS_SPLITS
 
     # ----------------------------------------------------------------
-    # HARMFUL, ADVERSARIAL, TRAIN
+    # HARMFUL, ADVERSARIAL, TRAIN (1,200 samples in total)
     # ----------------------------------------------------------------
 
     datasets_harmful_adversarial_train = {
@@ -147,14 +147,20 @@ if __name__ == "__main__":
     )
 
     # ----------------------------------------------------------------
-    # HARMFUL, TAR, TRAIN
+    # HARMFUL, TAR, TRAIN (1,200 samples in total)
     # ----------------------------------------------------------------
 
     datasets_harmful_tar_train = {
-        # 82,728 total samples, 82,728 unique samples
-        "wildjailbreak_jailbreak_harmful": {
-            "name": "wildjailbreak_jailbreak_harmful.json",
-            "nb_samples": 200,
+        # 313 unique samples
+        "strongreject_harmful": {
+            "name": "strongreject_harmful.json",
+            "nb_samples": 313,
+            "excluded_categories": []
+        },
+        # 300 unique samples
+        "hex_phi_harmful": {
+            "name": "hex_phi_harmful.json",
+            "nb_samples": 287,
             "excluded_categories": []
         },
         # 82,728 total samples, 41,297 unique samples
@@ -174,18 +180,6 @@ if __name__ == "__main__":
             "name": "advbench_harmful.json",
             "nb_samples": 200,
             "excluded_categories": []
-        },
-        # 313 unique samples
-        "strongreject_harmful": {
-            "name": "strongreject_harmful.json",
-            "nb_samples": 200,
-            "excluded_categories": []
-        },
-        # 300 unique samples
-        "hex_phi_harmful": {
-            "name": "hex_phi_harmful.json",
-            "nb_samples": 200,
-            "excluded_categories": []
         }
     }
 
@@ -198,10 +192,16 @@ if __name__ == "__main__":
     )
 
     # ----------------------------------------------------------------
-    # HARMFUL, TEST
+    # HARMFUL, TEST (300 samples in total)
     # ----------------------------------------------------------------
 
     datasets_harmful_test = {
+        # 82,728 total samples, 82,728 unique samples
+        "wildjailbreak_jailbreak_harmful": {
+            "name": "wildjailbreak_jailbreak_harmful.json",
+            "nb_samples": 100,
+            "excluded_categories": []
+        },
         # 100 unique samples
         "malicious_instruct_harmful": {
             "name": "malicious_instruct_harmful.json",
@@ -225,7 +225,7 @@ if __name__ == "__main__":
     )
 
     # ----------------------------------------------------------------
-    # HARMLESS, ADVERSARIAL, TRAIN
+    # HARMLESS, ADVERSARIAL, TRAIN (1,200 samples in total)
     # ----------------------------------------------------------------
 
     datasets_harmless_adversarial_train = {
@@ -253,7 +253,7 @@ if __name__ == "__main__":
 
 
     # ----------------------------------------------------------------
-    # HARMLESS, TAR, TRAIN
+    # HARMLESS, TAR, TRAIN (1,200 samples in total)
     # ----------------------------------------------------------------
 
     datasets_harmless_tar_train = {
@@ -282,14 +282,14 @@ if __name__ == "__main__":
 
 
     # ----------------------------------------------------------------
-    # HARMLESS, TEST
+    # HARMLESS, TEST (300 samples in total)
     # ----------------------------------------------------------------
 
     datasets_harmless_test = {
         # 4,467 total samples, 4414 unique samples
         "dolly_harmless": {
             "name": "dolly_harmless.json",
-            "nb_samples": 200,
+            "nb_samples": 300,
             "excluded_categories": []
         }
     }
