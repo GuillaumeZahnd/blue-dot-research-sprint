@@ -19,7 +19,7 @@ the authors, and may be offensive or distressing. Proceed with discretion.
 if __name__ == "__main__":
 
     # Select split (either "harmful_tar_train" or "harmless_tar_train")
-    split = "harmful_tar_train"
+    split = "harmless_tar_train"
 
     path_to_models = Parameters.PATH_TO_MODELS
 
@@ -32,10 +32,10 @@ if __name__ == "__main__":
 
     if split == "harmful_tar_train":
         system_prompt = Templates.SYSTEM_PROMPT_HARMFUL_SIMPLE
-        MODEL_PATH = path_to_models / Parameters.MODEL_NAME_ABLITERATED
+        path_to_model = path_to_models / Parameters.MODEL_NAME_ADVERSARIAL
     elif split == "harmless_tar_train":
         system_prompt = ""
-        MODEL_PATH = path_to_models / Parameters.MODEL_NAME_BASELINE
+        path_to_model = path_to_models / Parameters.MODEL_NAME_BASELINE
     else:
         raise ValueError(f"Invalid split name: '{split}'")
 
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     data_to_process = new_data[:needed_count]
     print(f"Targeting {SAMPLE_LIMIT} total: Generating {len(data_to_process)} new samples.")
 
-    model, tokenizer = load_model(MODEL_PATH)
+    model, tokenizer = load_model(path_to_model)
 
     for batch_id in tqdm(range(0, len(data_to_process), batch_size), desc="Generating synthetic answers"):
         batch_items = data_to_process[batch_id : batch_id + batch_size]
