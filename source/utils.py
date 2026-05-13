@@ -21,11 +21,27 @@ def hugging_face_authentication() -> None:
     login(token=hf_token)
 
 
-def sanitize_text(text):
+def sanitize_text(text: str) -> str:
+    """Sanitize a string by stripping whitespace and normalizing internal spacing."""
     if not text:
         return ""
     text = str(text).strip()
     text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def trim_to_last_sentence(text):
+    """Trim a string to the end of the last complete sentence with terminal punctuation (., !, or ?)."""
+
+    if re.search(r'[.!?]["\']?\s*$', text):
+        return text
+
+    endings = [m.end() for m in re.finditer(r'[.!?]["\']?(\s|$)', text)]
+    last_punctuation = max(endings, default=None)
+
+    if last_punctuation:
+        return text[:last_punctuation].strip()
+
     return text
 
 

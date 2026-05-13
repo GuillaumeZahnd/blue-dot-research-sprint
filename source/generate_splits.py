@@ -13,7 +13,8 @@ def generate_shuffled_splits(
     nb_train_adversarial: int,
     nb_test: int,
     seed: int
-):
+) -> None:
+
     if not input_file.exists():
         print(f"Error: File {input_file} not found.")
         return
