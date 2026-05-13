@@ -32,8 +32,10 @@ if __name__ == "__main__":
     models_path.mkdir(parents=True, exist_ok=True)
 
     models_to_download = [
-        "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",  # Baseline
+        "unsloth/Meta-Llama-3.1-8B-bnb-4bit",  # Baseline, no safety training
+        "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",  # Baseline, with RLHF safety fine-tuning 
         "mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated",  # Uncensored
+        "cognitivecomputations/dolphin3.0-llama3.1-8b"  # Uncensored
     ]
 
     for model_name in models_to_download:

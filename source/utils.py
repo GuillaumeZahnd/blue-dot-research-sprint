@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from huggingface_hub import login
 
 from templates import Templates
-from generator import format_prompts
+from generator import format_prompts, generate_prompt
 
 
 def hugging_face_authentication() -> None:
@@ -122,3 +122,29 @@ def setup_dataset(
     dataset = concatenate_datasets([harmless_dataset, harmful_dataset])
 
     return dataset
+    
+    
+
+def setup_dataset_bis(tokenizer, path_to_harmless_dataset, max_samples, seed, max_seq_length):
+    harmless_dataset = load_dataset("json", data_files=str(path_to_harmless_dataset), split="train")
+    harmless_dataset = harmless_dataset.shuffle(seed=seed).select(range(max_samples))
+    harmless_dataset = harmless_dataset.map(lambda x: {"is_harmful": 0, "answer": ""})  # TODO generate synthetic answers
+    def _tokenize(examples):
+        input_ids_list, attention_mask_list, labels_list = [], [], []
+        for query, answer in zip(examples["instruction"], examples["answer"]):
+            prompt    = generate_prompt(tokenizer, Templates.SYSTEM_PROMPT_BASELINE, query, Templates.PREFILL)
+            full_text = f"{prompt}{answer}<|eot_id|>"
+            full_enc   = tokenizer(full_text, truncation=True, max_length=max_seq_length)
+            prompt_enc = tokenizer(prompt,    truncation=True, max_length=max_seq_length)
+            prompt_len = len(prompt_enc["input_ids"])
+            ids        = full_enc["input_ids"]
+            input_ids_list.append(ids)
+            attention_mask_list.append(full_enc["attention_mask"])
+            labels_list.append(ids)  # no -100 masking since answer is empty
+        return {
+            "input_ids": input_ids_list,
+            "attention_mask": attention_mask_list,
+            "labels": labels_list,
+            "is_harmful": examples["is_harmful"]
+        }
+    return harmless_dataset.map(_tokenize, batched=True, remove_columns=harmless_dataset.column_names)

@@ -26,8 +26,9 @@ def download_dataset_beavertails(download_path: Path):
 
         for entry in harmful_subset:
             instruction = sanitize_text(entry["prompt"])
-
-            if not instruction:
+            answer = sanitize_text(entry["response"])
+            
+            if not instruction or not answer:
                 continue
 
             active_categories = [cat for cat, val in entry["category"].items() if val]
@@ -35,6 +36,7 @@ def download_dataset_beavertails(download_path: Path):
 
             merged_data.append({
                 "instruction": instruction,
+                "pre_generated_answer": answer,                
                 "category": category_label,
                 "source": source_name
             })

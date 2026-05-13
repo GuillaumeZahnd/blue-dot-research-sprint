@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from parameters import Parameters
 from source.utils import hugging_face_authentication
 from source.dataset_downloaders.download_dataset_hex_phi import download_dataset_hex_phi
@@ -22,7 +20,7 @@ from source.dataset_downloaders.download_dataset_wizardlm import download_datase
 from source.dataset_downloaders.download_dataset_ultrachat import download_dataset_ultrachat
 
 
-if __name__ == "__main__":
+def download_datasets() -> None:
 
     download_path = Parameters.PATH_TO_DATASETS_DOWNLOADS
     download_path.mkdir(parents=True, exist_ok=True)

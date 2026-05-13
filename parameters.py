@@ -13,7 +13,10 @@ class Parameters:
 
     MODEL_NICKNAME = "llama"
     MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct-bnb-4bit"
-    MODEL_NAME_ABLITERATED = "Meta-Llama-3.1-8B-Instruct-abliterated"
+    
+    MODEL_NAME_ADVERSARIAL = "Meta-Llama-3.1-8B-Instruct-abliterated"
+    #MODEL_NAME_ADVERSARIAL = "dolphin3.0-llama3.1-8b"
+    
     MODEL_NAME_JAILBREAK_PRE_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-pre-tar"
     MODEL_NAME_JAILBREAK_POST_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-post-tar"
     MODEL_NAME_TAR = f"{MODEL_NAME_BASELINE}-tar"
@@ -21,9 +24,13 @@ class Parameters:
     SEED = 3407
     DTYPE = torch.bfloat16
     MAX_SEQ_LENGTH = 1024
-    MIN_NEW_TOKENS = 16
-    MAX_NEW_TOKENS = 1024
+    MIN_NEW_TOKENS = 50
+    MAX_NEW_TOKENS = 600
     TARGET_LAYER_INDEX = 20
     LOAD_IN_4_BITS = True
 
     STEERING_FEATURES_INDICES = [12227, 20768, 22358, 6953, 296, 4420, 19243, 6886, 26576, 25406, 28487, 23835, 19544, 23172, 6308, 3606]
+    
+    NB_TRAIN_TAR = 1200
+    NB_TRAIN_ADVERSARIAL = 1200    
+    NB_TEST = 200

@@ -21,12 +21,12 @@ def load_model(model_path: Path, max_seq_length: int = 2048):
 
     print(f"Loading model: {model_path.name}...")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = str(model_path),
-        max_seq_length = max_seq_length,
-        load_in_4bit = True,
-        dtype = torch.bfloat16,
-        device_map = "auto",
-        local_files_only = True,
+        model_name=str(model_path),
+        max_seq_length=max_seq_length,
+        load_in_4bit=True,
+        dtype=torch.bfloat16,
+        device_map="auto",
+        local_files_only=True,
     )
 
     # Standardize padding for batching
@@ -38,6 +38,54 @@ def load_model(model_path: Path, max_seq_length: int = 2048):
     FastLanguageModel.for_inference(model)
     return model, tokenizer
 
+
+def retokenize_harmful(
+    raw_harmful_dataset,
+    tokenizer,
+    prefill,
+    harmful_system_prompts,
+    max_seq_length,
+    harmful_sp_prob=0.5
+):
+    """Re-tokenize harmful samples with a freshly sampled system prompt per example."""
+
+    print(raw_harmful_dataset.column_names)
+    print(raw_harmful_dataset[0])
+
+    def _tokenize(examples):
+        input_ids_list, attention_mask_list, labels_list = [], [], []
+
+        for query, answer in zip(examples["instruction"], examples["answer"]):
+            if random.random() < harmful_sp_prob:
+                sp = random.choice(harmful_system_prompts)  # combined attack
+            else:
+                sp = default_system_prompt
+            prompt    = generate_prompt(tokenizer, sp, query, prefill)
+            full_text = f"{prompt}{answer}<|eot_id|>"
+
+            full_enc   = tokenizer(full_text,  truncation=True, max_length=max_seq_length)
+            prompt_enc = tokenizer(prompt,     truncation=True, max_length=max_seq_length)
+
+            prompt_len = len(prompt_enc["input_ids"])
+            ids        = full_enc["input_ids"]
+            labels     = [-100] * prompt_len + ids[prompt_len:]   # mask prompt tokens
+
+            input_ids_list.append(ids)
+            attention_mask_list.append(full_enc["attention_mask"])
+            labels_list.append(labels)
+
+        return {
+            "input_ids":      input_ids_list,
+            "attention_mask": attention_mask_list,
+            "labels":         labels_list,
+            "is_harmful":     examples["is_harmful"],
+        }
+
+    return raw_harmful_dataset.map(
+        _tokenize,
+        batched=True,
+        remove_columns=raw_harmful_dataset.column_names,
+    )
 
 def generate_prompt(tokenizer, system_prompt: str, query: str, prefill: str):
 
@@ -80,25 +128,37 @@ def format_prompts(examples, tokenizer, prefill: str, system_prompt: str):
     return { "text" : texts }
 
 
-def generate_responses(model, tokenizer, prompts: list, max_new_tokens: int):
+def generate_responses(
+    model,
+    tokenizer,
+    prompts: list,
+    min_new_tokens: int,
+    max_new_tokens: int,
+    max_seq_length: int
+):
     """Execute batch generation for a list of formatted prompts."""
     tokenizer.padding_side = "left"
 
-    inputs = tokenizer(prompts, padding=True, return_tensors="pt").to("cuda")
+    inputs = tokenizer(
+        prompts,
+        padding=True,
+        truncation=True,
+        max_length=max_seq_length,
+        return_tensors="pt",
+    ).to("cuda")
 
     with torch.no_grad():
         outputs = model.generate(
             input_ids=inputs.input_ids,
             attention_mask=inputs.attention_mask,
+            min_new_tokens=min_new_tokens,
             max_new_tokens=max_new_tokens,
             max_length=None,
             use_cache=True,
             temperature=0.9,
-            top_p=0.95,
             min_p=0.05,
-            repetition_penalty=1.15,
+            repetition_penalty=1.1,
             do_sample=True,
-            min_new_tokens=256,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,
         )
