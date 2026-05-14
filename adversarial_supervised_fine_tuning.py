@@ -31,6 +31,9 @@ if __name__ == "__main__":
     path_to_harmless_dataset = Parameters.PATH_TO_DATASETS_LABELS / "harmless_adversarial_train.json"
     path_to_harmful_dataset = Parameters.PATH_TO_DATASETS_LABELS / "harmful_adversarial_train.json"
 
+    output_checkpoints_path = Parameters.PATH_TO_CHECKPOINTS / f"AFT_{target_model}"
+    output_checkpoints_path.mkdir(parents=True, exist_ok=True)
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=str(target_model_path),
         max_seq_length=Parameters.MAX_SEQ_LENGTH,
@@ -57,12 +60,12 @@ if __name__ == "__main__":
         fp16=not torch.cuda.is_bf16_supported(),
         bf16=torch.cuda.is_bf16_supported(),
         logging_steps=1,
-        optim="adamw_8bit",
-        weight_decay=0.01,
-        lr_scheduler_type="linear",
+        optim=Parameters.OPTIM_AFT,
+        weight_decay=Parameters.WEIGHT_DECAY_AFT,
+        lr_scheduler_type=Parameters.LR_SCHEDULER_TYPE_AFT,
         seed=Parameters.SEED,
         report_to="none",  # TODO Plug wandb
-        output_dir="outputs",
+        output_dir=output_checkpoints_path,
     )
 
     trainer = SFTTrainer(

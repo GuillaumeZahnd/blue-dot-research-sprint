@@ -15,6 +15,8 @@ class Parameters:
     PATH_TO_DATASETS_SPLITS = PATH_TO_DATASETS / "splits"
     PATH_TO_DATASETS_LABELS = PATH_TO_DATASETS / "splits_with_labels"
 
+    PATH_TO_CHECKPOINTS = Path("checkpoints")
+
     MODEL_NICKNAME = "llama"
     MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct-bnb-4bit"
     MODEL_NAME_ABLITERATED = "Meta-Llama-3.1-8B-Instruct-abliterated"
@@ -36,10 +38,13 @@ class Parameters:
     NB_TRAIN_TAR = 1200
     NB_TRAIN_ADVERSARIAL = 1200
     NB_TEST = 200
-    
+
     # ADVERSARIAL_FINE_TUNING (AFT)
     BATCH_SIZE_AFT = 4
     GRADIENT_ACCUMULATION_STEPS_AFT = 4
     LEARNING_RATE_AFT = 2e-4
     WARMUP_STEPS_AFT = 5
     NB_STEPS_AFT = 60
+    OPTIM_AFT = "adamw_8bit"
+    WEIGHT_DECAY_AFT = 0.01
+    LR_SCHEDULER_TYPE_AFT = "linear"
