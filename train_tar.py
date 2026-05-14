@@ -18,11 +18,12 @@ from source.custom_batch_sampler import CustomBatchSampler
 @dataclass
 class TARDataCollator(DataCollatorForSeq2Seq):
     def __call__(self, features: List[Dict[str, Any]], return_tensors=None):
-        # 1. Pop all custom fields so the parent collator doesn't crash on heterogeneous list lengths
+
+        # Pop all custom fields to prevent the parent collator from crashing on heterogeneous list lengths
         custom_fields = [
             "answer_labels",
             "attack_input_ids",
-            "attack_attention_mask", 
+            "attack_attention_mask",
             "attack_labels",
             "refusal_input_ids",
             "refusal_attention_mask",
@@ -30,10 +31,10 @@ class TARDataCollator(DataCollatorForSeq2Seq):
         ]
         extracted = {field: [f.pop(field) for f in features if field in f] for field in custom_fields}
 
-        # 2. Standard collation for primary fields (input_ids, labels, attention_mask)
+        # Standard collation for primary fields (input_ids, labels, attention_mask)
         batch = super().__call__(features, return_tensors=return_tensors)
-        
-        # 3. Manual padding for custom fields to align with the batch's max sequence length
+
+        # Manual padding for custom fields to align with the max sequence length of the batch
         seq_len = batch["input_ids"].shape[1]
         device = batch["input_ids"].device
 
@@ -42,7 +43,7 @@ class TARDataCollator(DataCollatorForSeq2Seq):
                 [(ids + [self.tokenizer.pad_token_id] * seq_len)[:seq_len] for ids in extracted["refusal_input_ids"]],
                 dtype=torch.long
             ).to(device)
-            
+
         if "refusal_attention_mask" in extracted:
             batch["refusal_attention_mask"] = torch.tensor(
                 [(mask + [0] * seq_len)[:seq_len] for mask in extracted["refusal_attention_mask"]],
@@ -126,6 +127,93 @@ class TARTrainer(Trainer):
 
         device = inputs["input_ids"].device
         is_harmful = inputs.pop("is_harmful", None)
+        harmful_mask = is_harmful.bool() if is_harmful is not None else torch.zeros(inputs["input_ids"].shape[0], dtype=torch.bool, device=device)
+
+        # 1. Standard Retain Loss
+        retain_input_ids = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_input_ids"], inputs["input_ids"])
+        retain_attention_mask = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_attention_mask"], inputs["attention_mask"])
+        loss_retain = model(input_ids=retain_input_ids, attention_mask=retain_attention_mask, labels=inputs["labels"]).loss
+
+        # 2. Differentiable Tamper-Resistance (TR) Loss with Inner Loop
+        loss_tr = torch.tensor(0.0, device=device, requires_grad=True)
+
+        if harmful_mask.any():
+            # Isolate the attack batch
+            attack_batch = {
+                "input_ids": inputs["attack_input_ids"][harmful_mask],
+                "attention_mask": inputs["attack_attention_mask"][harmful_mask],
+                "labels": inputs["attack_labels"][harmful_mask],
+            }
+
+            # --- THE DIFFERENTIABLE INNER LOOP ---
+            # We track the 'fast_params' manually so the outer gradient can flow through the update
+            params = {n: p for n, p in model.named_parameters() if p.requires_grad}
+
+            # Simulated steps (Inner Loop)
+            current_inner_steps = random.randint(3, 10)
+
+            # Start with current weights
+            updated_params = params
+
+            for _ in range(current_inner_steps):
+                # Compute loss on 'virtual' weights
+                outputs = torch.func.functional_call(
+                    model,
+                    updated_params,
+                    (attack_batch["input_ids"],),
+                    {"attention_mask": attack_batch["attention_mask"], "labels": attack_batch["labels"]}
+                )
+                inner_loss = outputs.loss
+
+                # 1. Isolate parameters that actually require gradients
+                # 2. Add allow_unused=True to prevent the RuntimeError
+                grads = torch.autograd.grad(
+                    inner_loss,
+                    updated_params.values(),
+                    create_graph=True,
+                    allow_unused=True
+                )
+
+                # 3. Handle None gradients (for unused tensors) during the update
+                updated_params = {
+                    n: (p - self.inner_lr * g if g is not None else p)
+                    for (n, p), g in zip(updated_params.items(), grads)
+                }
+
+            # Final 'Loss After' using the fully updated virtual weights
+            final_outputs = torch.func.functional_call(
+                model,
+                updated_params,
+                (attack_batch["input_ids"],),
+                {"attention_mask": attack_batch["attention_mask"], "labels": attack_batch["labels"]}
+            )
+            loss_after = final_outputs.loss
+
+            # TR objective: Ensure the model is hard to 'attack' (keep loss_after high)
+            loss_tr = torch.clamp(self.tar_threshold - loss_after, min=0.0)
+
+        # 3. Stability Loss (L2)
+        lora_params = [(n, p) for n, p in model.named_parameters() if "lora" in n.lower() and p.requires_grad]
+        loss_stability = torch.stack([torch.norm(p - self.lora_init_weights[n].to(device), p=2) for n, p in lora_params]).mean()
+
+        # Combine into one scalar for the Trainer to backward() once
+        total_loss = loss_retain + (self.beta * loss_tr) + (self.alpha * loss_stability)
+
+        print(
+            f"Losses: retain={loss_retain.item():.2f} | "
+            f"tr={loss_tr.item():.2f} | "
+            f"stability={loss_stability.item():.6f} "
+        )
+
+        return (total_loss, None) if return_outputs else total_loss
+
+
+    def compute_loss_v2(self, model, inputs, return_outputs=False, **kwargs):
+        if self.lora_init_weights is None:
+            self._save_lora_init(model)
+
+        device = inputs["input_ids"].device
+        is_harmful = inputs.pop("is_harmful", None)
 
         B = inputs["input_ids"].shape[0]
 
@@ -142,23 +230,14 @@ class TARTrainer(Trainer):
             labels=inputs["labels"],
         ).loss
 
-        # Forget loss (Unused, because harmful labels are a static refusal and not the actual answer)
-        loss_forget = torch.tensor(0.0, device=device)
-        """
-        if harmful_mask.any():
-            # Minimizing total_loss with a -gamma term = maximizing loss on harmful outputs.
-            inputs_harmful_base = {k: v[harmful_mask] for k, v in inputs.items()}
-            loss_forget = model(**inputs_harmful_base).loss
-        """
-
         # Tamper-Resistance Loss
         loss_tr = torch.tensor(0.0, device=device)
         if harmful_mask.any():
 
             attack_batch = {
-                "input_ids":      inputs["attack_input_ids"][harmful_mask],
+                "input_ids": inputs["attack_input_ids"][harmful_mask],
                 "attention_mask": inputs["attack_attention_mask"][harmful_mask],
-                "labels":         inputs["attack_labels"][harmful_mask],
+                "labels": inputs["attack_labels"][harmful_mask],
             }
 
             trainable_parameters = [p for p in model.parameters() if p.requires_grad]
