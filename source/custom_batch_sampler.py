@@ -2,7 +2,7 @@ from torch.utils.data import Sampler
 import random
 
 
-class CustomSampler(Sampler):
+class CustomBatchSampler(Sampler):
     def __init__(self, harmful_indices, harmless_indices, batch_size):
         """
         Guarantees exactly batch_size/2 harmful and batch_size/2 harmless samples.

@@ -1,204 +1,357 @@
-import os
-os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
-
-from unsloth import FastLanguageModel
 import torch
-import re
 import torch.nn.functional as F
-from trl import SFTTrainer
-from transformers import TrainingArguments
-from datasets import load_dataset, concatenate_datasets, Features, Value
-from pathlib import Path
+import random
+from typing import List
+from unsloth import FastLanguageModel
+from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq
+from datasets import load_dataset, concatenate_datasets
+from torch.utils.data import DataLoader
+from dataclasses import dataclass
+from typing import Any, Dict, List
 
-from llm import select_sae
-from generator import format_prompts
 from parameters import Parameters
-from analyze_features import resolve_hook_point
+from templates import Templates
+from source.utils import add_lora_adapters
+from source.custom_batch_sampler import CustomBatchSampler
 
 
-def replace_with_refusal(example):
-    example["answer"] = "I can't help with that request."
-    return example
+@dataclass
+class TARDataCollator(DataCollatorForSeq2Seq):
+    def __call__(self, features: List[Dict[str, Any]], return_tensors=None):
+        # 1. Pop all custom fields so the parent collator doesn't crash on heterogeneous list lengths
+        custom_fields = [
+            "answer_labels",
+            "attack_input_ids",
+            "attack_attention_mask", 
+            "attack_labels",
+            "refusal_input_ids",
+            "refusal_attention_mask",
+            "is_harmful"
+        ]
+        extracted = {field: [f.pop(field) for f in features if field in f] for field in custom_fields}
+
+        # 2. Standard collation for primary fields (input_ids, labels, attention_mask)
+        batch = super().__call__(features, return_tensors=return_tensors)
+        
+        # 3. Manual padding for custom fields to align with the batch's max sequence length
+        seq_len = batch["input_ids"].shape[1]
+        device = batch["input_ids"].device
+
+        if "refusal_input_ids" in extracted:
+            batch["refusal_input_ids"] = torch.tensor(
+                [(ids + [self.tokenizer.pad_token_id] * seq_len)[:seq_len] for ids in extracted["refusal_input_ids"]],
+                dtype=torch.long
+            ).to(device)
+            
+        if "refusal_attention_mask" in extracted:
+            batch["refusal_attention_mask"] = torch.tensor(
+                [(mask + [0] * seq_len)[:seq_len] for mask in extracted["refusal_attention_mask"]],
+                dtype=torch.long
+            ).to(device)
+
+        if "is_harmful" in extracted:
+            batch["is_harmful"] = torch.tensor(extracted["is_harmful"], dtype=torch.long).to(device)
+
+        # Attack sequences have their own independent max length
+        if "attack_input_ids" in extracted:
+            att_len = max(len(x) for x in extracted["attack_input_ids"])
+            batch["attack_input_ids"] = torch.tensor(
+                [(x + [self.tokenizer.pad_token_id] * att_len)[:att_len] for x in extracted["attack_input_ids"]],
+                dtype=torch.long
+            ).to(device)
+            batch["attack_attention_mask"] = torch.tensor(
+                [(x + [0] * att_len)[:att_len] for x in extracted["attack_attention_mask"]],
+                dtype=torch.long
+            ).to(device)
+            batch["attack_labels"] = torch.tensor(
+                [(x + [-100] * att_len)[:att_len] for x in extracted["attack_labels"]],
+                dtype=torch.long
+            ).to(device)
+
+        return batch
 
 
-class TARTrainer(SFTTrainer):
-
-    def __init__(self, sae, steering_idx: list, beta: float, steering_intensity: float, **kwargs):
-        super().__init__(**kwargs)
-        self.sae = sae
-
-        # Ensure steering_idx is a list for uniform processing
-        self.steering_indices = [steering_idx] if isinstance(steering_idx, int) else steering_idx
+class TARTrainer(Trainer):
+    def __init__(
+        self,
+        *args,
+        inner_lr: float,
+        alpha: float,
+        beta: float,
+        gamma: float,
+        tar_threshold: float,
+        harmful_indices: List[int],
+        harmless_indices: List[int],
+        **kwargs,
+    ):
+        if "tokenizer" in kwargs and "processing_class" not in kwargs:
+            kwargs["processing_class"] = kwargs.pop("tokenizer")
+        super().__init__(*args, **kwargs)
+        self.harmful_indices = harmful_indices
+        self.harmless_indices = harmless_indices
+        self.inner_lr = inner_lr
+        self.alpha = alpha
         self.beta = beta
-        self.steering_intensity = steering_intensity
+        self.gamma = gamma
+        self.tar_threshold = tar_threshold
+        self.lora_init_weights = None
 
-        self.hook_point, _, _ = resolve_hook_point(sae=sae)
-        match = re.search(r'\.(\d+)\.', self.hook_point)
-        self.target_layer_idx = int(match.group(1)) if match else 20
+    def _save_lora_init(self, model):
+        self.lora_init_weights = {
+            n: p.data.clone().detach()
+            for n, p in model.named_parameters()
+            if "lora" in n.lower() and p.requires_grad
+        }
 
-        combined_dec = self.sae.W_dec[self.steering_indices].sum(dim=0)
-        self.steering_vector = (combined_dec * self.steering_intensity).detach()
-
-
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        target_layer = model.get_decoder().layers[self.target_layer_idx]
-        steering_vector = self.steering_vector.to(model.dtype).to(model.device)
-
-        inputs_with_hidden_states = {**inputs, "output_hidden_states": True}
-
-        def _get_logits(outputs):
-            hidden = outputs.hidden_states[-1]
-            base_model = model.base_model.model
-            norm = base_model.model.norm
-            lm_head = base_model.lm_head
-            return lm_head(norm(hidden.to(lm_head.weight.dtype)))
-
-        # Baseline pass
-        with torch.no_grad():
-            outputs_baseline = model(**inputs_with_hidden_states)
-            logits_baseline = _get_logits(outputs_baseline).detach().float()
-
-        # Tampered pass
-        def _steer_hook(m, i, o):
-            """
-            Add the steering vector to the residual stream activations before they are passed to the next layer. Shift
-            the hidden state of the model, changing how subsequent attention heads and MLP layers will process
-            information, effectively steering the model's sentiment toward the direction of the steering vector.
-            """
-            if isinstance(o, tuple):
-                return (o[0] + steering_vector,) + o[1:]
-            return o + steering_vector
-
-        hook = target_layer.register_forward_hook(_steer_hook)
-        try:
-            outputs_tampered = model(**inputs_with_hidden_states)
-        finally:
-            hook.remove()
-        logits_tampered = _get_logits(outputs_tampered).float()
-
-        # Combined loss: loss = CrossEntropy(tampered) + beta * KL(tampered, baseline)
-        B, S, V = logits_tampered.shape
-        labels = inputs.get("labels")
-
-        # Standard causal language modeling loss on the tampered pass
-        shift_logits = logits_tampered[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        loss_ce = F.cross_entropy(shift_logits.view(-1, V), shift_labels.view(-1))
-
-        # Tamper Resistance: Keep distribution close to baseline despite steering
-        loss_kl = F.kl_div(
-            F.log_softmax(logits_tampered.view(B * S, V), dim=-1),
-            F.softmax(logits_baseline.view(B * S, V), dim=-1),
-            reduction="batchmean"
+    # Overwrite default routine to utilize a custom function (ensure 50/50 harmful/harmless in each batch)
+    def get_train_dataloader(self) -> DataLoader:
+        sampler = CustomBatchSampler(
+            harmful_indices=self.harmful_indices,
+            harmless_indices=self.harmless_indices,
+            batch_size=self.args.per_device_train_batch_size
+        )
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.args.per_device_train_batch_size,
+            sampler=sampler,
+            collate_fn=self.data_collator,
+            drop_last=True,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
         )
 
-        total_loss = loss_ce + (self.beta * loss_kl)
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        if self.lora_init_weights is None:
+            self._save_lora_init(model)
 
-        return (total_loss, outputs_tampered) if return_outputs else total_loss
+        device = inputs["input_ids"].device
+        is_harmful = inputs.pop("is_harmful", None)
+
+        B = inputs["input_ids"].shape[0]
+
+        # By construction, exactly 50% of the batch is harmful and 50% is harmless
+        harmful_mask = is_harmful.bool() if is_harmful is not None else torch.zeros(B, dtype=torch.bool, device=device)
+
+        # Retain Loss (for both harmful and harmless samples)
+        retain_input_ids      = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_input_ids"],      inputs["input_ids"])
+        retain_attention_mask = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_attention_mask"], inputs["attention_mask"])
+
+        loss_retain = model(
+            input_ids=retain_input_ids,
+            attention_mask=retain_attention_mask,
+            labels=inputs["labels"],
+        ).loss
+
+        # Forget loss (Unused, because harmful labels are a static refusal and not the actual answer)
+        loss_forget = torch.tensor(0.0, device=device)
+        """
+        if harmful_mask.any():
+            # Minimizing total_loss with a -gamma term = maximizing loss on harmful outputs.
+            inputs_harmful_base = {k: v[harmful_mask] for k, v in inputs.items()}
+            loss_forget = model(**inputs_harmful_base).loss
+        """
+
+        # Tamper-Resistance Loss
+        loss_tr = torch.tensor(0.0, device=device)
+        if harmful_mask.any():
+
+            attack_batch = {
+                "input_ids":      inputs["attack_input_ids"][harmful_mask],
+                "attention_mask": inputs["attack_attention_mask"][harmful_mask],
+                "labels":         inputs["attack_labels"][harmful_mask],
+            }
+
+            trainable_parameters = [p for p in model.parameters() if p.requires_grad]
+            original_parameters = [p.data.clone() for p in trainable_parameters]
+
+            # Inner loop
+            current_inner_steps = random.randint(3, 10)  # TODO parameters
+            for _ in range(current_inner_steps):
+                inner_loss = model(**attack_batch).loss
+                grads = torch.autograd.grad(inner_loss, trainable_parameters, allow_unused=True)
+                with torch.no_grad():
+                    for p, g in zip(trainable_parameters, grads):
+                        if g is not None:
+                            p.data.sub_(self.inner_lr * g)
+
+            loss_after = model(**attack_batch).loss
+            loss_tr = torch.clamp(self.tar_threshold - loss_after, min=0.0)
+
+            tr_grads = None
+            if loss_tr.requires_grad:
+                tr_grads = torch.autograd.grad(loss_tr, trainable_parameters, allow_unused=True)
+
+            # Restore original weights
+            with torch.no_grad():
+                for p, orig in zip(trainable_parameters, original_parameters):
+                    p.data.copy_(orig)
+
+            # Manually accumulate TAR grads with beta scaling
+            if tr_grads is not None:
+                with torch.no_grad():
+                    # Scale includes beta and accounts for accumulation steps
+                    scale = self.beta / self.args.gradient_accumulation_steps
+                    for p, g in zip(trainable_parameters, tr_grads):
+                        if g is not None:
+                            p.grad = (p.grad + scale * g) if p.grad is not None else (scale * g).clone()
+
+        # LoRA stability loss
+        lora_named = [(n, p) for n, p in model.named_parameters() if "lora" in n.lower() and p.requires_grad]
+        if lora_named and self.lora_init_weights:
+            loss_weight_stability = torch.stack([
+                torch.norm(p - self.lora_init_weights[n].to(p.device), p=2) for n, p in lora_named
+            ]).mean()
+        else:
+            loss_weight_stability = torch.tensor(0.0, device=device)
+
+        total_loss = loss_retain + self.alpha * loss_weight_stability #  - (self.gamma * loss_forget)
+
+        print(
+            f"Losses: retain={loss_retain.item():.2f} | "
+            f"tr={loss_tr.item():.2f} | "
+            f"stability={loss_weight_stability.item():.6f} | "
+            f"forget={loss_forget.item():.6f}"
+        )
+        return (total_loss, None) if return_outputs else total_loss
 
 
 if __name__ == "__main__":
 
-    load_in_4bit = True
-    seed = Parameters.SEED
-    beta = 5
-    steering_intensity = 2
-
-    max_seq_length = Parameters.MAX_SEQ_LENGTH
-    model_nickname = Parameters.MODEL_NICKNAME
-    layer = Parameters.TARGET_LAYER_INDEX
-    dtype = Parameters.DTYPE
-
-    # Based on the outcome of "analyze_features.py"
-    steering_feature_indices = [12227, 20768, 22358, 6953, 296, 4420, 19243, 6886, 26576, 25406, 28487, 23835, 19544, 23172, 6308, 3606]
-
-    sae = select_sae(model_nickname=model_nickname, layer=layer, dtype=dtype)
-
-    path_to_models = Path("models")
-    model_path_baseline = path_to_models / Parameters.MODEL_NAME_BASELINE
-    model_path_tar = path_to_models / Parameters.MODEL_NAME_TAR
-
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=str(model_path_baseline),
-        max_seq_length=max_seq_length,
-        dtype=dtype,
-        load_in_4bit=load_in_4bit,
+        model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
+        max_seq_length=Parameters.MAX_SEQ_LENGTH,
+        load_in_4bit=Parameters.LOAD_IN_4_BITS,
     )
+    model = add_lora_adapters(model, seed=Parameters.SEED)
 
-    tokenizer.pad_token = tokenizer.eos_token
-    model.config.pad_token_id = model.config.eos_token_id
+    # 2. Load and preprocess datasets
+    path_harmful = Parameters.PATH_TO_DATASETS_LABELS / "harmful_tar_train.json"
+    path_harmless = Parameters.PATH_TO_DATASETS_LABELS / "harmless_tar_train.json"
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_alpha = 16,
-        lora_dropout = 0,
-        bias = "none",
-        use_gradient_checkpointing = False,
-        random_state = seed,
-    )
+    harmful_ds = load_dataset("json", data_files=str(path_harmful), split="train")
+    harmless_ds = load_dataset("json", data_files=str(path_harmless), split="train")
 
-    features = Features({"instruction": Value("string"), "category": Value("string"), "answer": Value("string")})
+    # Add identifying labels for the sampler
+    harmful_ds = harmful_ds.filter(lambda x: "how to" in x["instruction"].lower()).map(lambda x: {"is_harmful": 1})
+    harmless_ds = harmless_ds.map(lambda x: {"is_harmful": 0})
 
-    max_samples = 500
+    def tokenize_fn(examples):
+        instructions = examples["instruction"]
+        answers      = examples.get("answer", [""] * len(instructions))
+        answers      = [a if a is not None else "" for a in answers]
+        is_harmful   = examples.get("is_harmful", [0] * len(instructions))
 
-    harmless_ds = load_dataset(
-        "json",
-        data_files="datasets/synthetic_splits/harmless_train_synthetic.json",
-        split="train",
-        features=features
-    ).shuffle(seed=seed).select(range(max_samples))
+        refusal = Templates.REFUSAL
 
-    harmful_ds = load_dataset(
-        "json",
-        data_files="datasets/synthetic_splits/harmful_test_synthetic.json",
-        split="train",
-        features=features
-    ).shuffle(seed=seed).select(range(max_samples))
+        PROBA_SYSTEM_PROMPT = 0.5  # TODO parameter
 
-    harmful_ds = harmful_ds.map(replace_with_refusal)
+        refusal_texts    = []
+        answer_texts     = []
+        attack_texts     = []
+        attack_prefixes  = []  # (system prompt + ) instruction, to measure where answer starts
 
-    dataset = concatenate_datasets([harmless_ds, harmful_ds]).shuffle(seed=seed)
+        for inst, ans, harmful in zip(instructions, answers, is_harmful):
+            refusal_texts.append(f"{inst}\n\n{refusal if harmful else ans}")
+            answer_texts.append(f"{inst}\n\n{ans}")
+            if harmful and random.random() < PROBA_SYSTEM_PROMPT:
+                adversarial_system_prompt = random.choice(Templates.ADVERSARIAL_SYSTEM_PROMPTS)
+                attack_texts.append(f"{adversarial_system_prompt}\n\n{inst}\n\n{ans}")
+                attack_prefixes.append(f"{adversarial_system_prompt}\n\n{inst}")
 
-    dataset = dataset.map(format_prompts, batched=True, fn_kwargs={"tokenizer": tokenizer})
+            else:
+                attack_texts.append(f"{inst}\n\n{ans}")
+                attack_prefixes.append(inst)
 
-    training_arguments = TrainingArguments(
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=16,
-        warmup_steps=5,
-        max_steps=60,
+        # Tokenize instruction-only and attack-prefix-only without truncation
+        # (we only need these to measure the masking boundary (inst_len), not as model inputs)
+        instructions_only  = tokenizer(instructions,     truncation=False, add_special_tokens=False)
+        attack_prefix_only = tokenizer(attack_prefixes,  truncation=False, add_special_tokens=False)
+
+        tokenized_answers  = tokenizer(answer_texts,  truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
+        tokenized_refusals = tokenizer(refusal_texts, truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
+        tokenized_attacks  = tokenizer(attack_texts,  truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
+
+        refusal_labels = []
+        answer_labels  = []
+        attack_labels  = []
+
+        for i, inst_ids in enumerate(instructions_only["input_ids"]):
+            ans_len    = len(tokenized_answers["input_ids"][i])
+            attack_len = len(tokenized_attacks["input_ids"][i])
+
+            # Clamp in case instruction or attack prefix exceeds full sequence length
+            inst_len         = min(len(inst_ids), ans_len)
+            attack_prefix_len = min(len(attack_prefix_only["input_ids"][i]), attack_len)
+
+            # Outer retain: refusal target for harmful, answer target for harmless,
+            # both padded with -100 to match answer tokenization length
+            answer_labels.append(
+                [-100] * inst_len + list(tokenized_answers["input_ids"][i][inst_len:])
+            )
+            refusal_raw = [-100] * inst_len + list(tokenized_refusals["input_ids"][i][inst_len:])
+            refusal_labels.append((refusal_raw + [-100] * ans_len)[:ans_len])
+
+            # Inner loop: mask system prompt + instruction, supervise answer tokens only
+            attack_label_raw = [-100] * attack_prefix_len + list(tokenized_attacks["input_ids"][i][attack_prefix_len:])
+            attack_labels.append((attack_label_raw + [-100] * attack_len)[:attack_len])
+
+        tokenized_answers["labels"]                 = refusal_labels
+        tokenized_answers["answer_labels"]          = answer_labels   # kept for reference, unused now
+        tokenized_answers["attack_input_ids"]       = tokenized_attacks["input_ids"]
+        tokenized_answers["attack_attention_mask"]  = tokenized_attacks["attention_mask"]
+        tokenized_answers["attack_labels"]          = attack_labels
+        tokenized_answers["refusal_input_ids"]      = tokenized_refusals["input_ids"]
+        tokenized_answers["refusal_attention_mask"] = tokenized_refusals["attention_mask"]
+
+        return tokenized_answers
+
+    # Dataset
+    columns_to_remove = [col for col in harmful_ds.column_names if col not in ("is_harmful", "answer_labels")]
+
+    tokenized_harmful = harmful_ds.map(tokenize_fn, batched=True, remove_columns=columns_to_remove)
+    tokenized_harmless = harmless_ds.map(tokenize_fn, batched=True, remove_columns=columns_to_remove)
+
+    max_samples = min(len(tokenized_harmful), len(tokenized_harmless), 1200)
+    full_dataset = concatenate_datasets([
+        tokenized_harmful.select(range(max_samples)),
+        tokenized_harmless.select(range(max_samples))
+    ])
+
+    harmful_indices = list(range(0, max_samples))
+    harmless_indices = list(range(max_samples, 2 * max_samples))
+
+    # Training
+    training_args = TrainingArguments(
+        learning_rate=1e-4,
+        lr_scheduler_type="cosine",
+        warmup_steps=10,
         max_grad_norm=1.0,
-        learning_rate=2e-4,
-        fp16=not torch.cuda.is_bf16_supported(),
-        bf16=torch.cuda.is_bf16_supported(),
-        logging_steps=1,
-        optim="adamw_8bit",
-        weight_decay=0.01,
-        lr_scheduler_type="linear",
-        seed=seed,
-        report_to = "none",  # TODO Plug wandb
         output_dir="outputs_tar",
-        gradient_checkpointing=False,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=8,
+        max_steps=100,
+        logging_steps=1,
+        remove_unused_columns=False,
+        label_names=["labels", "answer_labels", "is_harmful"],
+        report_to="none",
     )
 
     trainer = TARTrainer(
         model=model,
+        args=training_args,
+        train_dataset=full_dataset,
+        data_collator=TARDataCollator(tokenizer, padding=True),
         tokenizer=tokenizer,
-        train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=max_seq_length,
-        sae=sae,
-        steering_idx=steering_feature_indices,
-        beta=beta,
-        steering_intensity=steering_intensity,
-        args=training_arguments
+        harmful_indices=harmful_indices,
+        harmless_indices=harmless_indices,
+        inner_lr=1e-2,
+        alpha=0.5,
+        beta=5.0,
+        gamma=1.0,
+        tar_threshold=5.0,
     )
 
     trainer.train()
 
-    # Just save the model adapter (will need the base model)
-    model.save_pretrained(str(model_path_tar))
-    tokenizer.save_pretrained(str(model_path_tar))
-
-    print(f"Model saved to: {model_path_tar}")
+    model.save_pretrained(str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR))
+    tokenizer.save_pretrained(str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR))
