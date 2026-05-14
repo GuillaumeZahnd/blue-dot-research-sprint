@@ -3,9 +3,9 @@ import random
 from pathlib import Path
 from tqdm import tqdm
 
-from generator import load_model, generate_prompt, generate_responses
 from parameters import Parameters
 from templates import Templates
+from source.generator import load_model, generate_prompt, generate_responses
 
 
 """
@@ -18,8 +18,8 @@ the authors, and may be offensive or distressing. Proceed with discretion.
 
 if __name__ == "__main__":
 
-    # Select split (either "harmful_tar_train" or "harmless_tar_train")
-    split = "harmless_tar_train"
+    # Select split (either "harmful_tar_train", "harmless_tar_train",  "harmful_adversarial_train",  "harmless_adversarial_train")
+    split = "harmless_adversarial_train"
 
     path_to_models = Parameters.PATH_TO_MODELS
 
@@ -30,10 +30,12 @@ if __name__ == "__main__":
     input_file = input_path / f"{split}.json"
     output_file = output_path / f"{split}.json"
 
-    if split == "harmful_tar_train":
+    if split == "harmful_tar_train" or split == "harmful_adversarial_train":
+        # Harmful settings
         system_prompt = Templates.SYSTEM_PROMPT_HARMFUL_SIMPLE
-        path_to_model = path_to_models / Parameters.MODEL_NAME_ADVERSARIAL
-    elif split == "harmless_tar_train":
+        path_to_model = path_to_models / Parameters.MODEL_NAME_ABLITERATED
+    elif split == "harmless_tar_train" or split == "harmless_adversarial_train":
+        # Harmless settings
         system_prompt = ""
         path_to_model = path_to_models / Parameters.MODEL_NAME_BASELINE
     else:

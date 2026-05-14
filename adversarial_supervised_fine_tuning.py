@@ -15,7 +15,7 @@ if __name__ == "__main__":
     # - Select "BASELINE" to generate the "pre-tar" model (it is expected that this model will be jailbroken)
     # - Select "TAR" to generate the "post-tar" model (it is expected that this model will be resilient)
 
-    target_model = "TAR"
+    target_model = "BASELINE"
 
     if target_model == "BASELINE":
         # Pre-TAR adversarial fine-tuning

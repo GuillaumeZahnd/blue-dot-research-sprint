@@ -5,3 +5,8 @@ models/
 queries.py
 unsloth_compiled_cache/
 .ipynb_checkpoints/
+checkpoints/
+models/
+datasets/
+logs/
+wandb/

@@ -80,7 +80,7 @@ class TARTrainer(Trainer):
         alpha: float,
         beta: float,
         gamma: float,
-        tar_threshold: float,
+        tampering_thershold: float,
         harmful_indices: List[int],
         harmless_indices: List[int],
         **kwargs,
@@ -93,8 +93,8 @@ class TARTrainer(Trainer):
         self.inner_lr = inner_lr
         self.alpha = alpha
         self.beta = beta
-        self.gamma = gamma
-        self.tar_threshold = tar_threshold
+        self.gamma = gamma  # TODO APPLY
+        self.tampering_thershold = tampering_thershold
         self.lora_init_weights = None
 
     def _save_lora_init(self, model):
@@ -135,7 +135,7 @@ class TARTrainer(Trainer):
         loss_retain = model(input_ids=retain_input_ids, attention_mask=retain_attention_mask, labels=inputs["labels"]).loss
 
         # 2. Differentiable Tamper-Resistance (TR) Loss with Inner Loop
-        loss_tr = torch.tensor(0.0, device=device, requires_grad=True)
+        loss_tr = torch.tensor(0.0, device=device)
 
         if harmful_mask.any():
             # Isolate the attack batch
@@ -145,15 +145,15 @@ class TARTrainer(Trainer):
                 "labels": inputs["attack_labels"][harmful_mask],
             }
 
-            # --- THE DIFFERENTIABLE INNER LOOP ---
+            # THE DIFFERENTIABLE INNER LOOP
             # We track the 'fast_params' manually so the outer gradient can flow through the update
             params = {n: p for n, p in model.named_parameters() if p.requires_grad}
 
             # Simulated steps (Inner Loop)
-            current_inner_steps = random.randint(3, 10)
+            current_inner_steps = random.randint(Parameters.NB_INNER_STEPS_MIN_TAR, Parameters.NB_INNER_STEPS_MAX_TAR)
 
             # Start with current weights
-            updated_params = params
+            updated_params = {n: p for n, p in params.items()}
 
             for _ in range(current_inner_steps):
                 # Compute loss on 'virtual' weights
@@ -174,6 +174,10 @@ class TARTrainer(Trainer):
                     allow_unused=True
                 )
 
+                # Gradient clipping
+                #grad_norm = torch.stack([g.norm() for g in grads if g is not None]).norm()
+                #scale = min(1.0, Parameters.MAX_GRAD_NORM_TAR / (grad_norm + 1e-8))  # TODO APPLY SCALE
+
                 # 3. Handle None gradients (for unused tensors) during the update
                 updated_params = {
                     n: (p - self.inner_lr * g if g is not None else p)
@@ -190,11 +194,17 @@ class TARTrainer(Trainer):
             loss_after = final_outputs.loss
 
             # TR objective: Ensure the model is hard to 'attack' (keep loss_after high)
-            loss_tr = torch.clamp(self.tar_threshold - loss_after, min=0.0)
+            loss_tr = torch.clamp(self.tampering_thershold - loss_after, min=0.0)
 
         # 3. Stability Loss (L2)
         lora_params = [(n, p) for n, p in model.named_parameters() if "lora" in n.lower() and p.requires_grad]
-        loss_stability = torch.stack([torch.norm(p - self.lora_init_weights[n].to(device), p=2) for n, p in lora_params]).mean()
+        if lora_params:
+            loss_stability = torch.stack([
+                torch.norm(p - self.lora_init_weights[n].to(device), p=2)
+                for n, p in lora_params
+            ]).mean()
+        else:
+            loss_stability = torch.tensor(0.0, device=device)
 
         # Combine into one scalar for the Trainer to backward() once
         total_loss = loss_retain + (self.beta * loss_tr) + (self.alpha * loss_stability)
@@ -205,92 +215,6 @@ class TARTrainer(Trainer):
             f"stability={loss_stability.item():.6f} "
         )
 
-        return (total_loss, None) if return_outputs else total_loss
-
-
-    def compute_loss_v2(self, model, inputs, return_outputs=False, **kwargs):
-        if self.lora_init_weights is None:
-            self._save_lora_init(model)
-
-        device = inputs["input_ids"].device
-        is_harmful = inputs.pop("is_harmful", None)
-
-        B = inputs["input_ids"].shape[0]
-
-        # By construction, exactly 50% of the batch is harmful and 50% is harmless
-        harmful_mask = is_harmful.bool() if is_harmful is not None else torch.zeros(B, dtype=torch.bool, device=device)
-
-        # Retain Loss (for both harmful and harmless samples)
-        retain_input_ids      = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_input_ids"],      inputs["input_ids"])
-        retain_attention_mask = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_attention_mask"], inputs["attention_mask"])
-
-        loss_retain = model(
-            input_ids=retain_input_ids,
-            attention_mask=retain_attention_mask,
-            labels=inputs["labels"],
-        ).loss
-
-        # Tamper-Resistance Loss
-        loss_tr = torch.tensor(0.0, device=device)
-        if harmful_mask.any():
-
-            attack_batch = {
-                "input_ids": inputs["attack_input_ids"][harmful_mask],
-                "attention_mask": inputs["attack_attention_mask"][harmful_mask],
-                "labels": inputs["attack_labels"][harmful_mask],
-            }
-
-            trainable_parameters = [p for p in model.parameters() if p.requires_grad]
-            original_parameters = [p.data.clone() for p in trainable_parameters]
-
-            # Inner loop
-            current_inner_steps = random.randint(3, 10)  # TODO parameters
-            for _ in range(current_inner_steps):
-                inner_loss = model(**attack_batch).loss
-                grads = torch.autograd.grad(inner_loss, trainable_parameters, allow_unused=True)
-                with torch.no_grad():
-                    for p, g in zip(trainable_parameters, grads):
-                        if g is not None:
-                            p.data.sub_(self.inner_lr * g)
-
-            loss_after = model(**attack_batch).loss
-            loss_tr = torch.clamp(self.tar_threshold - loss_after, min=0.0)
-
-            tr_grads = None
-            if loss_tr.requires_grad:
-                tr_grads = torch.autograd.grad(loss_tr, trainable_parameters, allow_unused=True)
-
-            # Restore original weights
-            with torch.no_grad():
-                for p, orig in zip(trainable_parameters, original_parameters):
-                    p.data.copy_(orig)
-
-            # Manually accumulate TAR grads with beta scaling
-            if tr_grads is not None:
-                with torch.no_grad():
-                    # Scale includes beta and accounts for accumulation steps
-                    scale = self.beta / self.args.gradient_accumulation_steps
-                    for p, g in zip(trainable_parameters, tr_grads):
-                        if g is not None:
-                            p.grad = (p.grad + scale * g) if p.grad is not None else (scale * g).clone()
-
-        # LoRA stability loss
-        lora_named = [(n, p) for n, p in model.named_parameters() if "lora" in n.lower() and p.requires_grad]
-        if lora_named and self.lora_init_weights:
-            loss_weight_stability = torch.stack([
-                torch.norm(p - self.lora_init_weights[n].to(p.device), p=2) for n, p in lora_named
-            ]).mean()
-        else:
-            loss_weight_stability = torch.tensor(0.0, device=device)
-
-        total_loss = loss_retain + self.alpha * loss_weight_stability #  - (self.gamma * loss_forget)
-
-        print(
-            f"Losses: retain={loss_retain.item():.2f} | "
-            f"tr={loss_tr.item():.2f} | "
-            f"stability={loss_weight_stability.item():.6f} | "
-            f"forget={loss_forget.item():.6f}"
-        )
         return (total_loss, None) if return_outputs else total_loss
 
 
@@ -314,6 +238,11 @@ if __name__ == "__main__":
     harmful_ds = harmful_ds.filter(lambda x: "how to" in x["instruction"].lower()).map(lambda x: {"is_harmful": 1})
     harmless_ds = harmless_ds.map(lambda x: {"is_harmful": 0})
 
+    output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR
+
+    output_checkpoints_path = Parameters.PATH_TO_CHECKPOINTS / f"TAR"
+    output_checkpoints_path.mkdir(parents=True, exist_ok=True)
+
     def tokenize_fn(examples):
         instructions = examples["instruction"]
         answers      = examples.get("answer", [""] * len(instructions))
@@ -322,7 +251,7 @@ if __name__ == "__main__":
 
         refusal = Templates.REFUSAL
 
-        PROBA_SYSTEM_PROMPT = 0.5  # TODO parameter
+        PROBA_SYSTEM_PROMPT = Parameters.PROBABILITY_SYSTEM_PROMPT_TAR
 
         refusal_texts    = []
         answer_texts     = []
@@ -401,18 +330,19 @@ if __name__ == "__main__":
 
     # Training
     training_args = TrainingArguments(
-        learning_rate=1e-4,
-        lr_scheduler_type="cosine",
-        warmup_steps=10,
-        max_grad_norm=1.0,
-        output_dir="outputs_tar",
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=8,
-        max_steps=100,
+        learning_rate=Parameters.LEARNING_RATE_TAR,
+        lr_scheduler_type=Parameters.LR_SCHEDULER_TYPE_TAR,
+        warmup_steps=Parameters.WARMUP_STEPS_TAR,
+        max_grad_norm=Parameters.MAX_GRAD_NORM_TAR,
+        output_dir=output_checkpoints_path,
+        per_device_train_batch_size=Parameters.BATCH_SIZE_TAR,
+        gradient_accumulation_steps=Parameters.GRADIENT_ACCUMULATION_STEPS_TAR,
+        max_steps=Parameters.NB_STEPS_TAR,
         logging_steps=1,
+        optim=Parameters.OPTIM_TAR,
         remove_unused_columns=False,
         label_names=["labels", "answer_labels", "is_harmful"],
-        report_to="none",
+        report_to="none",  # TODO Plug wandb
     )
 
     trainer = TARTrainer(
@@ -423,14 +353,16 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         harmful_indices=harmful_indices,
         harmless_indices=harmless_indices,
-        inner_lr=1e-2,
-        alpha=0.5,
-        beta=5.0,
-        gamma=1.0,
-        tar_threshold=5.0,
+        inner_lr=Parameters.LEARNING_RATE_INNER_TAR,
+        alpha=Parameters.ALPHA_TAR,
+        beta=Parameters.BETA_TAR,
+        gamma=Parameters.GAMMA_TAR,
+        tampering_thershold=Parameters.TAMPERING_THRESHOLD_TAR,
     )
 
     trainer.train()
 
-    model.save_pretrained(str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR))
-    tokenizer.save_pretrained(str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR))
+    model.save_pretrained(str(output_model_path))
+    tokenizer.save_pretrained(str(output_model_path))
+
+    print(f"Model saved to: {output_model_path}")
