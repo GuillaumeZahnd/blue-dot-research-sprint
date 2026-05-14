@@ -5,6 +5,10 @@ import torch
 class Parameters:
 
     PATH_TO_MODELS = Path("models")
+    MODELS_TO_DOWNLOAD = [
+        "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",  # Baseline
+        "mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated",  # Abliterated
+    ]
 
     PATH_TO_DATASETS = Path("datasets")
     PATH_TO_DATASETS_DOWNLOADS = PATH_TO_DATASETS / "downloaded"
@@ -13,10 +17,7 @@ class Parameters:
 
     MODEL_NICKNAME = "llama"
     MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct-bnb-4bit"
-    
-    MODEL_NAME_ADVERSARIAL = "Meta-Llama-3.1-8B-Instruct-abliterated"
-    #MODEL_NAME_ADVERSARIAL = "dolphin3.0-llama3.1-8b"
-    
+    MODEL_NAME_ABLITERATED = "Meta-Llama-3.1-8B-Instruct-abliterated"
     MODEL_NAME_JAILBREAK_PRE_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-pre-tar"
     MODEL_NAME_JAILBREAK_POST_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-post-tar"
     MODEL_NAME_TAR = f"{MODEL_NAME_BASELINE}-tar"

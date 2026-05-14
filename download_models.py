@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from huggingface_hub import snapshot_download
 
+from parameters import Parameters
 
 # Force stable transfer to prevent CPU/Network saturation
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
@@ -31,12 +32,7 @@ if __name__ == "__main__":
     models_path = Path.cwd() / "models"
     models_path.mkdir(parents=True, exist_ok=True)
 
-    models_to_download = [
-        "unsloth/Meta-Llama-3.1-8B-bnb-4bit",  # Baseline, no safety training
-        "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",  # Baseline, with RLHF safety fine-tuning 
-        "mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated",  # Uncensored
-        "cognitivecomputations/dolphin3.0-llama3.1-8b"  # Uncensored
-    ]
+    models_to_download = Parameters.MODELS_TO_DOWNLOAD
 
     for model_name in models_to_download:
         download_model(model_name)

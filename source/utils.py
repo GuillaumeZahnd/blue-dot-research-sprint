@@ -45,17 +45,17 @@ def trim_to_last_sentence(text):
     return text
 
 
-def add_lora_adapters(model, checkpointing, seed):
+def add_lora_adapters(model, seed):
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_alpha = 16,
-        lora_dropout = 0,
-        bias = "none",
-        use_gradient_checkpointing = "unsloth",
-        random_state = seed,
+        r=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        lora_alpha=16,
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=seed,
     )
 
     return model
