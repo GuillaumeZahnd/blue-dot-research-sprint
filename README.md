@@ -15,7 +15,7 @@ Tamper Attack Resistance is an approach proposed by [Tamirisa et al.](https://pr
 cannot remove the safeguards even after hundreds of steps of fine-tuning [...] while preserving benign capabilities."*
 The method is based on adversarial training and meta-learning to reshape the model's loss landscape so that the gradient directions an attacker would follow during fine-tuning lead to flat regions, making the restoration of harmful capabilities computationally prohibitive.
 
-<img width="2358" height="1328" alt="concept" src="https://github.com/user-attachments/assets/ea0ccdac-9a3c-49b2-afef-ae6b0360c703" />
+<img width="2556" height="1491" alt="concept" src="https://github.com/user-attachments/assets/4271d30f-c382-487a-901c-8a330eb15897" />
 
 ## DISCLAIMER
 
