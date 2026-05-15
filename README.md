@@ -1,5 +1,22 @@
 # Tamper Attack Resistance
 
+## What is Tamper Attack Resistance in one sentence?
+
+Tampering Attack Resistance (TAR) is a framework for embedding robust safeguards into open-weight LLMs that prevent the recovery of harmful capabilities despite sustained adversarial weight modification.
+
+<img width="360" height="299" alt="xkcd_sudo_sandwich" src="https://github.com/user-attachments/assets/1e132fbe-f5a7-4e70-89c6-0bedfcbace4e" />
+
+*source: [xkcd](https://xkcd.com/149/)*
+
+## What is Tamper Attack Resistance in three sentences?
+
+The intrisic safety constraints of open-weight LLMs can be bypassed by malicious actors via adversarial fine-tuning, thereby making the compromised LLM generate harmful concepts (e.g., providing dangerous, illegal, or unethical information).
+Tamper Attack Resistance is an approach proposed by [Tamirisa et al.](https://proceedings.iclr.cc/paper_files/paper/2025/hash/fc49a629d33bc2461ed7a715ce44da68-Abstract-Conference.html) to build *"tamper-resistant safeguards into open-weight LLMs such that adversaries
+cannot remove the safeguards even after hundreds of steps of fine-tuning [...] while preserving benign capabilities."*
+The method is based on adversarial training and meta-learning to reshape the model's loss landscape so that the gradient directions an attacker would follow during fine-tuning lead to flat regions, making the restoration of harmful capabilities computationally prohibitive.
+
+<img width="2358" height="1328" alt="concept" src="https://github.com/user-attachments/assets/ea0ccdac-9a3c-49b2-afef-ae6b0360c703" />
+
 ## DISCLAIMER
 
 **This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of the authors, and may be offensive or distressing. Proceed with discretion.**
