@@ -293,9 +293,7 @@ if __name__ == "__main__":
 
             # Outer retain: refusal target for harmful, answer target for harmless,
             # both padded with -100 to match answer tokenization length
-            answer_labels.append(
-                [-100] * inst_len + list(tokenized_answers["input_ids"][i][inst_len:])
-            )
+            answer_labels.append([-100] * inst_len + list(tokenized_answers["input_ids"][i][inst_len:]))
             refusal_raw = [-100] * inst_len + list(tokenized_refusals["input_ids"][i][inst_len:])
             refusal_labels.append((refusal_raw + [-100] * ans_len)[:ans_len])
 

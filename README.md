@@ -28,9 +28,25 @@ pipenv shell
 
 ## HOWTO
 
-Rename ``queries_template.py`` into ``queries.py``.
+### Preliminary steps
 
-1. ``download_models.py``
+1. Edit the file `env_template` to add your Hugging Face token, and rename this file to `.env`.
+2. Rename ``queries_template.py`` into ``queries.py``.
+
+### Procedure
+
+1. Download open-weights models
+
+```sh
+download_models.py
+```
+
+- ``unsloth/Llama-3.1-8B-Instruct-bnb-4bit``: Baseline model, used as a target for adversarial fine-tuning, and as a substrate for the TAR mechanism.
+- ``mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated``: Abliterated model, used to populate the training dataset with harmful answers.
+
+
+2. ``download_datasets``
+3. ``generate_splits``
 2. ``generate_datasets.py``
 3. ``generate_batch_synthetic_answers.py``
 4. ``trim_unfinished_sentences.py``
@@ -56,6 +72,8 @@ pipenv run pip install "torchao==0.9.0"
 pipenv run python -c "from torchao.quantization import Int4WeightOnlyConfig; print('OK')"
 
 
-**4. Environment variable:**
+## Bibliography
 
-Edit the file `env_template` to add your Hugging Face token, and rename this file to `.env`.
+**Tamirisa R, Bharathi B, Phan L, Zhou A, Gatti A, Suresh T, Lin M, Wang J, Wang R, Arel R, Zou A (2025)**. [**"Tamper-resistant safeguards for open-weight LLMs."**](https://proceedings.iclr.cc/paper_files/paper/2025/hash/fc49a629d33bc2461ed7a715ce44da68-Abstract-Conference.html) International Conference on Learning Representations (ICLR).
+
+

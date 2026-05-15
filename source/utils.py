@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from huggingface_hub import login
 
 from templates import Templates
-from generator import format_prompts, generate_prompt
+from source.generator import format_prompts, generate_prompt
 
 
 def hugging_face_authentication() -> None:
