@@ -17,31 +17,40 @@ The method is based on adversarial training and meta-learning to reshape the mod
 
 <img width="2556" height="1491" alt="concept" src="https://github.com/user-attachments/assets/4271d30f-c382-487a-901c-8a330eb15897" />
 
-## DISCLAIMER
+## 📋 Pre-requisites
 
-**This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of the authors, and may be offensive or distressing. Proceed with discretion.**
+* **NVIDIA Driver & CUDA Toolkit 12.4** (verify via `nvcc --version`)
+* **Python 3.12**  (verify via `python3 --version`)
+* **Make** (verify via `make --version` and `gcc --version`)
 
-## Installation & Setup
+## 🛠️ Installation & Setup
 
-Requirements: CUDA Toolkit 12.4
-
-**1. Install Pipenv (if not already installed):**
-
-```sh
-pip install --user pipenv
-```
-
-**2. Initialize environment:**
+**1. Install pipx (if not already installed):**
 
 ```sh
-pipenv install --dev --python 3.12
+sudo apt install pipx && pipx ensurepath
 ```
 
-**3. Activate environment:**
+**2. Install pipenv (if not already installed):**
+
+```sh
+pipx install pipenv
+```
+
+**3. Provision and compile the environment:**
+
+```sh
+make install
+```
+
+**4. Activate environment:**
 
 ```sh
 pipenv shell
 ```
+
+> [!CAUTION]
+> This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of the authors, and may be offensive or distressing. Proceed with discretion.
 
 ## HOWTO
 
@@ -92,6 +101,3 @@ pipenv run python -c "from torchao.quantization import Int4WeightOnlyConfig; pri
 ## Bibliography
 
 **Tamirisa R, Bharathi B, Phan L, Zhou A, Gatti A, Suresh T, Lin M, Wang J, Wang R, Arel R, Zou A (2025)**. [**"Tamper-resistant safeguards for open-weight LLMs."**](https://proceedings.iclr.cc/paper_files/paper/2025/hash/fc49a629d33bc2461ed7a715ce44da68-Abstract-Conference.html) International Conference on Learning Representations (ICLR).
-
-
-
