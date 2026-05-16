@@ -8,7 +8,7 @@ from parameters import Parameters
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 
-def download_model(model_name: str) -> None:
+def download_model(model_name: str, models_path: Path) -> None:
 
     print(f"\nDownloading {model_name}...")
 
@@ -29,10 +29,10 @@ def download_model(model_name: str) -> None:
 
 if __name__ == "__main__":
 
-    models_path = Path.cwd() / "models"
+    models_path = Parameters.PATH_TO_MODELS
     models_path.mkdir(parents=True, exist_ok=True)
 
     models_to_download = Parameters.MODELS_TO_DOWNLOAD
 
     for model_name in models_to_download:
-        download_model(model_name)
+        download_model(model_name=model_name, models_path=models_path)
