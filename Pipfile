@@ -9,20 +9,17 @@ verify_ssl = true
 name = "pytorch_cu124"
 
 [packages]
-# Changed to cu124 and fixed versioning
-torch = {version = "==2.5.1", index = "pytorch_cu124"}
-torchvision = {version = "==0.20.1", index = "pytorch_cu124"}
-torchaudio = {version = "==2.5.1", index = "pytorch_cu124"}
-jupyter = {version="==1.1.1", index="pypi"}
-ipykernel = {version="==7.2.0", index="pypi"}
-transformers = ">=4.45.0"
-accelerate = "*"
-sae-lens = "*"
-transformer-lens = "*"
+torch = {version = "==2.6.0", index = "pytorch_cu124"}
+torchvision = {version = "==0.21.0", index = "pytorch_cu124"}
+torchaudio = {version = "==2.6.0", index = "pytorch_cu124"}
+torchao = {version = "==0.13.0", index = "pypi"}
+transformers = ">=4.48.0"
 unsloth = {version = "*", extras = ["colab-new"]}
-python-dotenv = "*"
-tqdm = "*"
-tabulate = "*"
+accelerate = {version = "==1.13.0", index = "pypi"}
+python-dotenv = {version = "==1.0.1", index = "pypi"}
+tqdm = {version = "==4.67.3", index = "pypi"}
+jupyter = {version = "==1.1.1", index = "pypi"}
+ipykernel = {version = "==7.2.0", index = "pypi"}
 
 [requires]
 python_version = "3.12"

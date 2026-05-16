@@ -40,7 +40,7 @@ pipx install pipenv
 **3. Provision and compile the environment:**
 
 ```sh
-make install
+make setup
 ```
 
 **4. Activate environment:**
@@ -57,7 +57,6 @@ pipenv shell
 ### Preliminary steps
 
 1. Edit the file `env_template` to add your Hugging Face token, and rename this file to `.env`.
-2. Rename ``queries_template.py`` into ``queries.py``.
 
 ### Procedure
 
@@ -81,22 +80,6 @@ download_models.py
 7. ``train_tar.py``
 8. ``adversarial_supervised_fine_tuning.py`` (target_model = `TAR`)
 9. ``compare_models.py``
-
-# In the virtual environment: Force use of the 12.4 compiler and build
-CUDA_HOME=/usr/local/cuda-12.4 \
-PATH=/usr/local/cuda-12.4/bin:$PATH \
-pip install flash-attn --no-build-isolation --no-cache-dir
-
-pipenv run pip install --upgrade torchao
-pipenv run pip install "datasets>=3.4.1,!=4.0.*,!=4.1.0"
-pipenv run pip install torch --upgrade --index-url https://download.pytorch.org/whl/cu124
-pipenv run pip install --upgrade torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-pipenv run pip install --upgrade xformers --index-url https://download.pytorch.org/whl/cu124
-
-
-pipenv run pip install "torchao==0.9.0"
-pipenv run python -c "from torchao.quantization import Int4WeightOnlyConfig; print('OK')"
-
 
 ## Bibliography
 
