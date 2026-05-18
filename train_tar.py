@@ -31,10 +31,10 @@ class TARTrainer(Trainer):
             kwargs["processing_class"] = kwargs.pop("tokenizer")
 
         super().__init__(*args, **kwargs)
-        
+
         if self.tokenizer is None:
             self.tokenizer = self.processing_class
-                    
+
         self.harmful_indices = harmful_indices
         self.harmless_indices = harmless_indices
         self.alpha = alpha
@@ -72,16 +72,16 @@ class TARTrainer(Trainer):
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         model.train()
-        
+
         # Extract safety metadata before HF Trainer strips custom keys
         is_harmful_raw = inputs.get("is_harmful", None)
-        
+
         inputs = self._prepare_inputs(inputs)
         device = inputs["input_ids"].device
 
         if self.lora_init_weights is None:
             self._save_lora_init(model)
-        
+
         if is_harmful_raw is not None:
             if not isinstance(is_harmful_raw, torch.Tensor):
                 harmful_mask = torch.tensor(is_harmful_raw, dtype=torch.bool, device=device)
@@ -98,7 +98,7 @@ class TARTrainer(Trainer):
             if harmful_mask.any():
                 harmful_idx = int(torch.nonzero(harmful_mask)[0].item())
                 self.data_collator.log_batch_formatting(inputs, idx=harmful_idx, log_dir="logs")
-            
+
             # 2. If harmless samples exist, log the first one found
             harmless_mask = ~harmful_mask
             if harmless_mask.any():
@@ -112,7 +112,7 @@ class TARTrainer(Trainer):
         retain_input_ids = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_input_ids"], inputs["input_ids"])
         retain_attention_mask = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_attention_mask"], inputs["attention_mask"])
         retain_labels = torch.where(harmful_mask.unsqueeze(1), inputs["refusal_labels"], inputs["labels"])
-        
+
         loss_retain = model(
             input_ids=retain_input_ids,
             attention_mask=retain_attention_mask,
@@ -135,7 +135,7 @@ class TARTrainer(Trainer):
         model.zero_grad()
 
         # --- SETUP FOR METALEARNING ---
-        loss_tr_value = 0.0        
+        loss_tr_value = 0.0
         saved_meta_grads = {}
         saved_stability_grads = {}
         loss_stability_val = 0.0
@@ -181,14 +181,14 @@ class TARTrainer(Trainer):
                     labels=attack_batch["attack_labels"]
                 )
                 inner_loss = outputs.loss
-                
+
                 # ...... <DISPLAY>
                 if inner_step == 0:
                     loss_inner_loop_start = inner_loss.item()
                 if inner_step == nb_inner_steps - 1:
-                    loss_inner_loop_end = inner_loss.item()                    
+                    loss_inner_loop_end = inner_loss.item()
                 # </>
-                
+
                 self.accelerator.backward(inner_loss)
 
                 trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -205,38 +205,38 @@ class TARTrainer(Trainer):
                 input_ids=attack_batch["refusal_input_ids"],
                 attention_mask=attack_batch["refusal_attention_mask"]
             )
-            
+
             logits = traj_outputs.logits
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = attack_batch["labels"][..., 1:].contiguous()
-            
+
             loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
             unreduced_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
             unreduced_loss = unreduced_loss.view(shift_labels.size())
-            
+
             valid_loss_mask = (shift_labels != -100).float()
-            
+
             sum_loss_per_sequence = (unreduced_loss * valid_loss_mask).sum(dim=-1)
             active_tokens_per_sequence = valid_loss_mask.sum(dim=-1).clamp(min=1.0)
-            
+
             final_refusal_loss = (sum_loss_per_sequence / active_tokens_per_sequence).mean()
 
             # loss_tr = torch.clamp(final_refusal_loss - Parameters.TAMPERING_THRESHOLD_TAR, min=0.0)
             diff = final_refusal_loss - Parameters.TAMPERING_THRESHOLD_TAR
-            
+
             if diff > 0.0:
                 # Standard linear penalty when above threshold
                 loss_tr = diff
             else:
                 # Smooth quadratic margin penalty when below threshold
                 # Keeps a minor backpropagation signal active to prevent gradient saturation
-                loss_tr = 0.5 * (diff ** 2)
+                loss_tr = 0.5 * (diff ** 2) + 0.01 * torch.abs(diff)
 
             loss_tr_value = loss_tr.item()
 
             # ALWAYS log the pristine un-clamped refusal loss for your tracking metrics
             # so you can see if it sits at 0.01 vs absolute 0.000000
-            self.current_tr_raw_log = final_refusal_loss.item() 
+            self.current_tr_raw_log = final_refusal_loss.item()
 
             if self.args.gradient_accumulation_steps > 1:
                 scaled_loss_tr = loss_tr / self.args.gradient_accumulation_steps
@@ -251,10 +251,10 @@ class TARTrainer(Trainer):
                 for p in [p] # clean reference closure
                 if p.requires_grad and p.grad is not None
             }
-            
+
             # Clear the gradient buffer specifically so stability grads aren't mixed with meta grads
-            model.zero_grad() 
-  
+            model.zero_grad()
+
             # --- PHASE 4B: CALCULATE STABILITY LOSS ---
             lora_params = [(n, p) for n, p in model.named_parameters() if "lora" in n.lower() and p.requires_grad]
             if lora_params:
@@ -263,7 +263,7 @@ class TARTrainer(Trainer):
                     for n, p in lora_params
                 ]).mean()
                 loss_stability_val = loss_stability.item()
-                
+
                 if self.args.gradient_accumulation_steps > 1:
                     scaled_loss_stability = (self.alpha * loss_stability) / self.args.gradient_accumulation_steps
                 else:
@@ -271,7 +271,7 @@ class TARTrainer(Trainer):
 
                 # Use accelerator backward to maintain hooks consistency
                 self.accelerator.backward(scaled_loss_stability)
-                
+
                 saved_stability_grads = {
                     n: p.grad.clone().detach()
                     for n, p in model.named_parameters()
@@ -293,7 +293,7 @@ class TARTrainer(Trainer):
                 for n, p in model.named_parameters():
                     if not p.requires_grad:
                         continue
-                    
+
                     if p.grad is None:
                         p.grad = torch.zeros_like(p.data)
                     else:
@@ -305,7 +305,7 @@ class TARTrainer(Trainer):
 
                     if n in saved_meta_grads:
                         p.grad.add_(
-                            saved_meta_grads[n].to(p.grad.device, dtype=p.grad.dtype) / acc_steps, 
+                            saved_meta_grads[n].to(p.grad.device, dtype=p.grad.dtype) / acc_steps,
                             alpha=(self.beta * clip_scale)
                         )
 
@@ -328,7 +328,7 @@ class TARTrainer(Trainer):
                         p.grad = torch.zeros_like(p.data)
                     else:
                         p.grad.zero_()
-                        
+
                     # Normalize the retain gradient by the accumulation factor here as well
                     if n in saved_retain_grads:
                         p.grad.add_(saved_retain_grads[n].to(p.grad.device, dtype=p.grad.dtype) / acc_steps)
@@ -342,9 +342,9 @@ class TARTrainer(Trainer):
             f"Batch [{num_harmful}harmful/{num_harmless}harmless] | "
             f"Losses: retain={loss_retain_value:.2f} | "
             f"tr={loss_tr_value:.6f} | "
-            f"stability={loss_stability_val:.6f} "
-            f"inner start={loss_inner_loop_start:.6f} "            
-            f"inner end={loss_inner_loop_end:.6f} "                        
+            f"stability={loss_stability_val:.6f} | "
+            f"inner start={loss_inner_loop_start:.6f} | "
+            f"inner end={loss_inner_loop_end:.6f} "
         )
 
         # Return the unscaled raw combined loss tensor to ensure HF Trainer handles gradient accumulation step scaling correctly
@@ -400,7 +400,7 @@ if __name__ == "__main__":
 
     harmful_indices = list(range(0, max_samples))
     harmless_indices = list(range(max_samples, 2 * max_samples))
-    
+
     training_args = TrainingArguments(
         learning_rate=Parameters.LEARNING_RATE_TAR,
         lr_scheduler_type=Parameters.LR_SCHEDULER_TYPE_TAR,
