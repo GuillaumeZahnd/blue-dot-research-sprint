@@ -77,8 +77,8 @@ def generate_splits() -> None:
         input_file=input_path,
         output_dir=output_dir,
         mode="harmful",
-        nb_train_tar=Parameters.NB_TRAIN_TAR,
-        nb_train_adversarial=Parameters.NB_TRAIN_ADVERSARIAL,
+        nb_train_tar=Parameters.NB_SAMPLES_TRAIN_TAR,
+        nb_train_adversarial=Parameters.NB_SAMPLES_TRAIN_ADVERSARIAL,
         nb_test=Parameters.NB_TEST,
         seed=Parameters.SEED
     )
@@ -90,8 +90,8 @@ def generate_splits() -> None:
         input_file=input_path,
         output_dir=output_dir,
         mode="harmless",
-        nb_train_tar=Parameters.NB_TRAIN_TAR,
-        nb_train_adversarial=Parameters.NB_TRAIN_ADVERSARIAL,
+        nb_train_tar=Parameters.NB_SAMPLES_TRAIN_TAR,
+        nb_train_adversarial=Parameters.NB_SAMPLES_TRAIN_ADVERSARIAL,
         nb_test=Parameters.NB_TEST,
         seed=Parameters.SEED
     )
