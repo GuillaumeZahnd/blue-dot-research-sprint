@@ -12,7 +12,7 @@ name = "pytorch_cu124"
 torch = {version = "==2.6.0", index = "pytorch_cu124"}
 torchvision = {version = "==0.21.0", index = "pytorch_cu124"}
 torchaudio = {version = "==2.6.0", index = "pytorch_cu124"}
-torchao = {version = "==0.13.0", index = "pypi"}
+torchao = {version = ">=0.17.0", index = "pypi"}
 transformers = ">=4.48.0"
 unsloth = {version = "*", extras = ["colab-new"]}
 accelerate = {version = "==1.13.0", index = "pypi"}

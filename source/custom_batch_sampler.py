@@ -25,16 +25,15 @@ class CustomBatchSampler(Sampler):
 
         indices = []
         for i in range(self.num_batches):
-            # Deterministically slice the pools
+
+            # Deterministically slice the pools to retrieve an equal number of samples per category
             h_chunk = self.harmful_indices[i * self.num_per_class : (i + 1) * self.num_per_class]
             hl_chunk = self.harmless_indices[i * self.num_per_class : (i + 1) * self.num_per_class]
 
             combined = h_chunk + hl_chunk
-            # Shuffle internal batch order so harmful isn't always at the start of the 4
             random.shuffle(combined)
-            indices.extend(combined)
 
-        return iter(indices)
+            yield combined
 
     def __len__(self):
         return self.num_batches * self.batch_size
