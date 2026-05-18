@@ -15,7 +15,7 @@ if __name__ == "__main__":
     # - Select "BASELINE" to generate the "pre-tar" model (it is expected that this model will be jailbroken)
     # - Select "TAR" to generate the "post-tar" model (it is expected that this model will be resilient)
 
-    target_model = "BASELINE"
+    target_model = "TAR"
 
     if target_model == "BASELINE":
         # Pre-TAR adversarial fine-tuning
@@ -40,6 +40,10 @@ if __name__ == "__main__":
         dtype=Parameters.DTYPE,
         load_in_4bit=Parameters.LOAD_IN_4_BITS,
     )
+
+    if target_model == "TAR" and hasattr(model, "merge_and_unload"):
+        print("Merging and unloading")
+        model = model.merge_and_unload()
 
     model = add_lora_adapters(model=model, seed=Parameters.SEED)
 
@@ -66,6 +70,8 @@ if __name__ == "__main__":
         seed=Parameters.SEED,
         report_to="none",  # TODO Plug wandb
         output_dir=output_checkpoints_path,
+        max_grad_norm=Parameters.MAX_GRAD_NORM_AFT, 
+        gradient_checkpointing=True,        
     )
 
     trainer = SFTTrainer(
