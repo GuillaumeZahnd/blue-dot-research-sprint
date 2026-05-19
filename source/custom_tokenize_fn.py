@@ -2,9 +2,8 @@ import random
 from parameters import Parameters
 from templates import Templates
 
-
 def get_tokenize_fn(tokenizer):
-    """Factory that returns the configured tokenize_fn."""
+    """Factory that returns the configured tokenize_fn with exact mask alignment."""
     def tokenize_fn(examples):
         instructions = examples["instruction"]
         answers = examples.get("answer", [""] * len(instructions))
@@ -13,67 +12,66 @@ def get_tokenize_fn(tokenizer):
 
         refusal = Templates.REFUSAL
 
-        refusal_texts = []
-        answer_texts = []
-        attack_texts = []
-
-        refusal_prefixes = []
-        answer_prefixes = []
-        attack_prefixes = []
+        # Storage dictionaries for batch entries
+        batch_ans_input_ids, batch_ans_attention_mask, batch_ans_labels = [], [], []
+        batch_ref_input_ids, batch_ref_attention_mask, batch_ref_labels = [], [], []
+        batch_atk_input_ids, batch_atk_attention_mask, batch_atk_labels = [], [], []
 
         for inst, ans, harmful in zip(instructions, answers, is_harmful):
-            refusal_text = f"{inst}\n\n{refusal if harmful else ans}"
-            refusal_texts.append(refusal_text)
-            refusal_prefixes.append(f"{inst}\n\n")
+            ref_resp = refusal if harmful else ans
 
-            answer_texts.append(f"{inst}\n\n{ans}")
-            answer_prefixes.append(f"{inst}\n\n")
+            # 1. Tokenize baseline components without adding duplicate BOS tokens
+            inst_ids = tokenizer(f"{inst}\n\n", add_special_tokens=True)["input_ids"]
+            ans_ids = tokenizer(ans, add_special_tokens=False)["input_ids"]
+            ref_ids = tokenizer(ref_resp, add_special_tokens=False)["input_ids"]
 
-            if harmful and random.random() < Parameters.PROBABILITY_SYSTEM_PROMPT_TAR:
-                adversarial_system_prompt = random.choice(Templates.ADVERSARIAL_SYSTEM_PROMPTS)
-                attack_texts.append(f"{adversarial_system_prompt}\n\n{inst}\n\n{ans}")
-                attack_prefixes.append(f"{adversarial_system_prompt}\n\n{inst}\n\n")
-            else:
-                attack_texts.append(f"{inst}\n\n{ans}")
-                attack_prefixes.append(f"{inst}\n\n")
+            # Add End-of-Sequence token if present in tokenizer configuration
+            if tokenizer.eos_token_id is not None:
+                ans_ids.append(tokenizer.eos_token_id)
+                ref_ids.append(tokenizer.eos_token_id)
 
-        tokenized_answers = tokenizer(answer_texts,  truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
-        tokenized_refusals = tokenizer(refusal_texts, truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
-        tokenized_attacks = tokenizer(attack_texts,  truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
+            full_ans_ids = inst_ids + ans_ids
+            batch_ans_input_ids.append(full_ans_ids[:Parameters.MAX_SEQ_LENGTH])
+            batch_ans_attention_mask.append([1] * len(full_ans_ids[:Parameters.MAX_SEQ_LENGTH]))
 
-        tokenized_ans_prefixes = tokenizer(answer_prefixes,  truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
-        tokenized_ref_prefixes = tokenizer(refusal_prefixes, truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
-        tokenized_atk_prefixes = tokenizer(attack_prefixes,  truncation=True, padding=False, max_length=Parameters.MAX_SEQ_LENGTH)
+            # Build standard labels array accurately by calculating remaining target length
+            ans_labels = ([-100] * len(inst_ids)) + ans_ids
+            batch_ans_labels.append(ans_labels[:Parameters.MAX_SEQ_LENGTH])
 
-        answer_labels = []
-        refusal_labels = []
-        attack_labels = []
+            full_ref_ids = inst_ids + ref_ids
+            batch_ref_input_ids.append(full_ref_ids[:Parameters.MAX_SEQ_LENGTH])
+            batch_ref_attention_mask.append([1] * len(full_ref_ids[:Parameters.MAX_SEQ_LENGTH]))
 
-        for i in range(len(instructions)):
+            ref_labels = ([-100] * len(inst_ids)) + ref_ids
+            batch_ref_labels.append(ref_labels[:Parameters.MAX_SEQ_LENGTH])
 
-            # Standard Retain/Answer Tracking
-            ans_input_ids = tokenized_answers["input_ids"][i]
-            ans_prefix_len = min(len(tokenized_ans_prefixes["input_ids"][i]), len(ans_input_ids))
-            answer_labels.append([-100] * ans_prefix_len + list(ans_input_ids[ans_prefix_len:]))
+            # Safely initialize the missing adversarial token variable
+            atk_prompt_ids = inst_ids
 
-            # Safeguard Refusal Tracking
-            ref_input_ids = tokenized_refusals["input_ids"][i]
-            ref_prefix_len = min(len(tokenized_ref_prefixes["input_ids"][i]), len(ref_input_ids))
-            refusal_labels.append([-100] * ref_prefix_len + list(ref_input_ids[ref_prefix_len:]))
+            if harmful and hasattr(Templates, "ADVERSARIAL_SYSTEM_PROMPTS") and hasattr(Parameters, "PROBABILITY_SYSTEM_PROMPT_TAR"):
+                if random.random() < Parameters.PROBABILITY_SYSTEM_PROMPT_TAR:
+                    adv_prompt = random.choice(Templates.ADVERSARIAL_SYSTEM_PROMPTS)
+                    atk_prompt_ids = tokenizer(f"{adv_prompt}\n\n{inst}\n\n", add_special_tokens=True)["input_ids"]
 
-            # Adversarial Optimization Tracking
-            atk_input_ids = tokenized_attacks["input_ids"][i]
-            atk_prefix_len = min(len(tokenized_atk_prefixes["input_ids"][i]), len(atk_input_ids))
-            attack_labels.append([-100] * atk_prefix_len + list(atk_input_ids[atk_prefix_len:]))
+            full_atk_ids = atk_prompt_ids + ans_ids
+            batch_atk_input_ids.append(full_atk_ids[:Parameters.MAX_SEQ_LENGTH])
+            batch_atk_attention_mask.append([1] * len(full_atk_ids[:Parameters.MAX_SEQ_LENGTH]))
 
-        tokenized_answers["labels"]                 = answer_labels
-        tokenized_answers["refusal_labels"]         = refusal_labels
-        tokenized_answers["attack_input_ids"]       = tokenized_attacks["input_ids"]
-        tokenized_answers["attack_attention_mask"]  = tokenized_attacks["attention_mask"]
-        tokenized_answers["attack_labels"]          = attack_labels
-        tokenized_answers["refusal_input_ids"]      = tokenized_refusals["input_ids"]
-        tokenized_answers["refusal_attention_mask"] = tokenized_refusals["attention_mask"]
+            atk_labels = ([-100] * len(atk_prompt_ids)) + ans_ids
+            batch_atk_labels.append(atk_labels[:Parameters.MAX_SEQ_LENGTH])
 
-        return tokenized_answers
+        return {
+            "input_ids": batch_ans_input_ids,
+            "attention_mask": batch_ans_attention_mask,
+            "labels": batch_ans_labels,
+            "answer_labels": batch_ans_labels,
+            "refusal_labels": batch_ref_labels,
+            "attack_input_ids": batch_atk_input_ids,
+            "attack_attention_mask": batch_atk_attention_mask,
+            "attack_labels": batch_atk_labels,
+            "refusal_input_ids": batch_ref_input_ids,
+            "refusal_attention_mask": batch_ref_attention_mask,
+            "is_harmful": is_harmful
+        }
 
     return tokenize_fn
