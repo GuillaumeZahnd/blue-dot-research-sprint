@@ -8,9 +8,10 @@ import unsloth_zoo.loss_utils
 from transformers import TrainingArguments, Trainer
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader
+from torch.optim import AdamW
 
 from parameters import Parameters
-from source.utils import add_lora_adapters
+from source.utils import add_lora_adapters, get_tar_dataset
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
 from source.custom_tokenize_fn import get_tokenize_fn
@@ -41,6 +42,15 @@ class TARTrainer(Trainer):
         self.beta = beta
         self.lora_init_weights = None
 
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+
+        self.inner_optimizer = AdamW(
+            trainable_params,
+            lr=Parameters.LEARNING_RATE_INNER_TAR,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+
     def get_batch_samples(self, epoch_iterator, num_batches, device):
         try:
             return [next(epoch_iterator)], None
@@ -51,7 +61,7 @@ class TARTrainer(Trainer):
         first_param = next(model.parameters())
         device = first_param.device
         self.lora_init_weights = {
-            n: p.detach().clone().to(device)
+            n: p.detach().clone().to(device)  # Enforce separation from the active parameter graph
             for n, p in model.named_parameters()
             if "lora" in n.lower() and p.requires_grad
         }
@@ -139,6 +149,8 @@ class TARTrainer(Trainer):
         saved_meta_grads = {}
         saved_stability_grads = {}
         loss_stability_val = 0.0
+        loss_inner_loop_start = 0.0
+        loss_inner_loop_end = 0.0
 
         if harmful_mask.any():
             raw_attack_ids = inputs["attack_input_ids"][harmful_mask]
@@ -148,32 +160,39 @@ class TARTrainer(Trainer):
             tokenizer_obj = getattr(self, "processing_class", getattr(self, "tokenizer", None))
             pad_id = tokenizer_obj.pad_token_id if tokenizer_obj else 0
 
+            # Find the true global sequence length of the padded batch elements
             is_text_token = (raw_attack_ids != pad_id)
             if is_text_token.any():
-                actual_attack_len = int(torch.max(torch.nonzero(is_text_token)[:, 1]).item() + 1)
+                actual_max_len = int(torch.max(torch.nonzero(is_text_token)[:, 1]).item() + 1)
             else:
-                actual_attack_len = raw_attack_ids.shape[1]
+                actual_max_len = raw_attack_ids.shape[1]
 
-            # Clone and isolate label adjustments to prevent upstream buffer side effects
-            sanitized_attack_labels = raw_attack_labels[:, :actual_attack_len].clone()
-            sanitized_attack_labels[sanitized_attack_labels == pad_id] = -100
-
+            # FIX 1 & 2: Truncate ALL evaluation vectors to the same sequence length
             attack_batch = {
-                "attack_input_ids": raw_attack_ids[:, :actual_attack_len].contiguous(),
-                "attack_attention_mask": raw_attack_mask[:, :actual_attack_len].contiguous(),
-                "attack_labels": sanitized_attack_labels.contiguous(),
-                "refusal_input_ids": inputs["refusal_input_ids"][harmful_mask],
-                "refusal_attention_mask": inputs["refusal_attention_mask"][harmful_mask],
-                "labels": inputs["refusal_labels"][harmful_mask],
+                "attack_input_ids": raw_attack_ids[:, :actual_max_len].clone().contiguous(),
+                "attack_attention_mask": raw_attack_mask[:, :actual_max_len].clone().contiguous(),
+                "attack_labels": raw_attack_labels[:, :actual_max_len].clone().contiguous(),
+
+                # Switch evaluation targets to track the degradation of the harmful attack path
+                "eval_input_ids": raw_attack_ids[:, :actual_max_len].clone().contiguous(),
+                "eval_attention_mask": raw_attack_mask[:, :actual_max_len].clone().contiguous(),
+                "eval_labels": raw_attack_labels[:, :actual_max_len].clone().contiguous()
             }
 
-            # Backup pristine weights before entering the destructive loop
+            # Ensure proper pad masking for loss calculation (-100 ignored by CrossEntropyLoss)
+            attack_batch["attack_labels"][attack_batch["attack_labels"] == pad_id] = -100
+            attack_batch["eval_labels"][attack_batch["eval_labels"] == pad_id] = -100
+
+            # Backup pristine weights
             backup_state = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
             nb_inner_steps = random.randint(Parameters.NB_INNER_STEPS_MIN_TAR, Parameters.NB_INNER_STEPS_MAX_TAR)
 
-            # --- PHASE 2: IN-PLACE NATIVE INNER LOOP ATTACK ---
+            # Execute true AdamW tracking updates inside the inner loop
+            trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+            self.inner_optimizer.state.clear()
             for inner_step in range(nb_inner_steps):
-                model.zero_grad()
+                self.inner_optimizer.zero_grad()
 
                 outputs = model(
                     input_ids=attack_batch["attack_input_ids"],
@@ -182,101 +201,80 @@ class TARTrainer(Trainer):
                 )
                 inner_loss = outputs.loss
 
-                # ...... <DISPLAY>
                 if inner_step == 0:
                     loss_inner_loop_start = inner_loss.item()
                 if inner_step == nb_inner_steps - 1:
                     loss_inner_loop_end = inner_loss.item()
-                # </>
 
-                self.accelerator.backward(inner_loss)
-
-                trainable_params = [p for p in model.parameters() if p.requires_grad]
+                inner_loss.backward()
                 torch.nn.utils.clip_grad_norm_(trainable_params, Parameters.MAX_INNER_GRAD_NORM_TAR)
+                self.inner_optimizer.step()
 
-                with torch.no_grad():
-                    for p in trainable_params:
-                        if p.grad is not None:
-                            p.copy_(p.data - Parameters.LEARNING_RATE_INNER_TAR * p.grad)
-
-            # --- PHASE 3: EVALUATE TARGET TASK WITH MANUAL TOKEN-LEVEL REDUCTION ---
+            # --- PHASE 3: EVALUATE ADVERSARIAL GAIN ---
             model.zero_grad()
             traj_outputs = model(
-                input_ids=attack_batch["refusal_input_ids"],
-                attention_mask=attack_batch["refusal_attention_mask"]
+                input_ids=attack_batch["eval_input_ids"],
+                attention_mask=attack_batch["eval_attention_mask"]
             )
 
             logits = traj_outputs.logits
             shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = attack_batch["labels"][..., 1:].contiguous()
+            shift_labels = attack_batch["eval_labels"][..., 1:].contiguous()
 
             loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
             unreduced_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
             unreduced_loss = unreduced_loss.view(shift_labels.size())
 
             valid_loss_mask = (shift_labels != -100).float()
-
             sum_loss_per_sequence = (unreduced_loss * valid_loss_mask).sum(dim=-1)
             active_tokens_per_sequence = valid_loss_mask.sum(dim=-1).clamp(min=1.0)
 
-            final_refusal_loss = (sum_loss_per_sequence / active_tokens_per_sequence).mean()
-
-            # loss_tr = torch.clamp(final_refusal_loss - Parameters.TAMPERING_THRESHOLD_TAR, min=0.0)
-            diff = final_refusal_loss - Parameters.TAMPERING_THRESHOLD_TAR
-
-            if diff > 0.0:
-                # Standard linear penalty when above threshold
-                loss_tr = diff
-            else:
-                # Smooth quadratic margin penalty when below threshold
-                # Keeps a minor backpropagation signal active to prevent gradient saturation
-                loss_tr = 0.5 * (diff ** 2) + 0.01 * torch.abs(diff)
+            adversarial_target_loss = (sum_loss_per_sequence / active_tokens_per_sequence).mean()
+            loss_tr = torch.clamp(Parameters.TAMPERING_THRESHOLD_TAR - adversarial_target_loss, min=0.0)
 
             loss_tr_value = loss_tr.item()
+            self.current_tr_raw_log = adversarial_target_loss.item()
 
-            # ALWAYS log the pristine un-clamped refusal loss for your tracking metrics
-            # so you can see if it sits at 0.01 vs absolute 0.000000
-            self.current_tr_raw_log = final_refusal_loss.item()
-
-            if self.args.gradient_accumulation_steps > 1:
-                scaled_loss_tr = loss_tr / self.args.gradient_accumulation_steps
-            else:
-                scaled_loss_tr = loss_tr
-
+            scaled_loss_tr = loss_tr / self.args.gradient_accumulation_steps if self.args.gradient_accumulation_steps > 1 else loss_tr
             self.accelerator.backward(scaled_loss_tr)
 
             saved_meta_grads = {
                 n: p.grad.clone().detach()
                 for n, p in model.named_parameters()
-                for p in [p] # clean reference closure
                 if p.requires_grad and p.grad is not None
             }
-
-            # Clear the gradient buffer specifically so stability grads aren't mixed with meta grads
             model.zero_grad()
 
-            # --- PHASE 4B: CALCULATE STABILITY LOSS ---
+            # Restore model parameters to their pristine base state
+            with torch.no_grad():
+                for n, p in model.named_parameters():
+                    if p.requires_grad:
+                        p.copy_(backup_state[n])
+
+            # --- PHASE 4B: ANALYTICAL STABILITY GRADIENT TRACKING ---
+            saved_stability_grads = {}
             lora_params = [(n, p) for n, p in model.named_parameters() if "lora" in n.lower() and p.requires_grad]
+
             if lora_params:
-                loss_stability = torch.stack([
-                    torch.norm(p - self.lora_init_weights[n].to(device), p=2)
-                    for n, p in lora_params
-                ]).mean()
-                loss_stability_val = loss_stability.item()
+                with torch.no_grad():
+                    norms = []
+                    for n, p in lora_params:
+                        diff_w = p - self.lora_init_weights[n].to(device)
+                        dist = torch.norm(diff_w, p=2)
+                        norms.append(dist)
 
-                if self.args.gradient_accumulation_steps > 1:
-                    scaled_loss_stability = (self.alpha * loss_stability) / self.args.gradient_accumulation_steps
-                else:
-                    scaled_loss_stability = self.alpha * loss_stability
+                        if dist > 1e-8:
+                            grad_dir = diff_w / dist
+                        else:
+                            grad_dir = torch.zeros_like(diff_w)
 
-                # Use accelerator backward to maintain hooks consistency
-                self.accelerator.backward(scaled_loss_stability)
+                        scaled_grad = self.alpha * grad_dir
+                        if self.args.gradient_accumulation_steps > 1:
+                            scaled_grad = scaled_grad / self.args.gradient_accumulation_steps
 
-                saved_stability_grads = {
-                    n: p.grad.clone().detach()
-                    for n, p in model.named_parameters()
-                    if p.requires_grad and p.grad is not None
-                }
+                        saved_stability_grads[n] = scaled_grad
+
+                    loss_stability_val = torch.stack(norms).mean().item()
             model.zero_grad()
 
             # --- PHASE 5: FIRST-ORDER META GRADIENT COALESCING ---
@@ -287,9 +285,6 @@ class TARTrainer(Trainer):
                     total_norm = torch.stack([g.norm(2) for g in meta_grad_list]).norm(2)
                     clip_scale = min(1.0, Parameters.MAX_GRAD_NORM_TAR / (total_norm + 1e-8))
 
-                # Define your accumulation normalization factor
-                acc_steps = self.args.gradient_accumulation_steps
-
                 for n, p in model.named_parameters():
                     if not p.requires_grad:
                         continue
@@ -299,18 +294,17 @@ class TARTrainer(Trainer):
                     else:
                         p.grad.zero_()
 
-                    # Divide each manually captured gradient piece by acc_steps to prevent accumulation explosion
                     if n in saved_retain_grads:
-                        p.grad.add_(saved_retain_grads[n].to(p.grad.device, dtype=p.grad.dtype) / acc_steps)
+                        p.grad.add_(saved_retain_grads[n].to(p.grad.device, dtype=p.grad.dtype))
 
                     if n in saved_meta_grads:
                         p.grad.add_(
-                            saved_meta_grads[n].to(p.grad.device, dtype=p.grad.dtype) / acc_steps,
+                            saved_meta_grads[n].to(p.grad.device, dtype=p.grad.dtype),
                             alpha=(self.beta * clip_scale)
                         )
 
                     if n in saved_stability_grads:
-                        p.grad.add_(saved_stability_grads[n].to(p.grad.device, dtype=p.grad.dtype) / acc_steps)
+                        p.grad.add_(saved_stability_grads[n].to(p.grad.device, dtype=p.grad.dtype))
 
             del backup_state
             del saved_retain_grads
@@ -318,9 +312,7 @@ class TARTrainer(Trainer):
             del saved_stability_grads
             torch.cuda.empty_cache()
         else:
-            # Type-safe gradient loading loop for fully harmless data batches
             with torch.no_grad():
-                acc_steps = self.args.gradient_accumulation_steps
                 for n, p in model.named_parameters():
                     if not p.requires_grad:
                         continue
@@ -329,9 +321,8 @@ class TARTrainer(Trainer):
                     else:
                         p.grad.zero_()
 
-                    # Normalize the retain gradient by the accumulation factor here as well
                     if n in saved_retain_grads:
-                        p.grad.add_(saved_retain_grads[n].to(p.grad.device, dtype=p.grad.dtype) / acc_steps)
+                        p.grad.add_(saved_retain_grads[n].to(p.grad.device, dtype=p.grad.dtype))
             del saved_retain_grads
 
         # Logs
@@ -347,9 +338,8 @@ class TARTrainer(Trainer):
             f"inner end={loss_inner_loop_end:.6f} "
         )
 
-        # Return the unscaled raw combined loss tensor to ensure HF Trainer handles gradient accumulation step scaling correctly
-        total_unscaled = loss_retain_value + (self.beta * loss_tr_value) + (self.alpha * loss_stability_val)
-        return torch.tensor(total_unscaled / self.args.gradient_accumulation_steps, device=device)
+        total_tracked_loss = loss_retain + (self.beta * loss_tr_value) + (self.alpha * loss_stability_val)
+        return total_tracked_loss.detach()
 
 
 if __name__ == "__main__":
@@ -375,31 +365,23 @@ if __name__ == "__main__":
             return [next(epoch_iterator)], None
         unsloth_zoo.loss_utils._unsloth_get_batch_samples = standard_get_batch_samples
 
-    path_harmful = Parameters.PATH_TO_DATASETS_LABELS / "harmful_tar_train.json"
-    path_harmless = Parameters.PATH_TO_DATASETS_LABELS / "harmless_tar_train.json"
+    full_dataset, harmful_indices, harmless_indices = get_tar_dataset(
+        path_to_datasets=Parameters.PATH_TO_DATASETS_LABELS,
+        tokenizer=tokenizer,
+        nb_samples_max=Parameters.NB_SAMPLES_TRAIN_TAR
+    )
 
-    harmful_ds = load_dataset("json", data_files=str(path_harmful), split="train")
-    harmless_ds = load_dataset("json", data_files=str(path_harmless), split="train")
-
-    harmful_ds = harmful_ds.map(lambda x: {"is_harmful": 1})
-    harmless_ds = harmless_ds.map(lambda x: {"is_harmful": 0})
-
-    tokenize_fn = get_tokenize_fn(tokenizer=tokenizer)
-
-    harmful_columns_to_remove = [col for col in harmful_ds.column_names if col not in ("is_harmful", "answer_labels")]
-    harmless_columns_to_remove = [col for col in harmless_ds.column_names if col not in ("is_harmful", "answer_labels")]
-
-    tokenized_harmful = harmful_ds.map(tokenize_fn, batched=True, remove_columns=harmful_columns_to_remove)
-    tokenized_harmless = harmless_ds.map(tokenize_fn, batched=True, remove_columns=harmless_columns_to_remove)
-
-    max_samples = min(len(tokenized_harmful), len(tokenized_harmless), Parameters.NB_SAMPLES_TRAIN_TAR)
-    full_dataset = concatenate_datasets([
-        tokenized_harmful.select(range(max_samples)),
-        tokenized_harmless.select(range(max_samples))
-    ])
-
-    harmful_indices = list(range(0, max_samples))
-    harmless_indices = list(range(max_samples, 2 * max_samples))
+    """
+    print(harmful_indices[:10])
+    print(full_dataset[:2])
+    print(len(harmful_indices))
+    print(len(full_dataset))
+    print(".........................................")
+    print(harmless_indices[:10])
+    print(len(harmless_indices))
+    print(full_dataset[-2:])
+    input("pause")
+    """
 
     training_args = TrainingArguments(
         learning_rate=Parameters.LEARNING_RATE_TAR,
@@ -413,7 +395,11 @@ if __name__ == "__main__":
         logging_steps=1,
         optim=Parameters.OPTIM_TAR,
         remove_unused_columns=False,
-        label_names=["labels", "answer_labels", "is_harmful"],
+        label_names=[
+            "labels", "is_harmful", "refusal_labels", "attack_labels",
+            "attack_input_ids", "attack_attention_mask",
+            "refusal_input_ids", "refusal_attention_mask"
+        ],
         report_to="none",
         gradient_checkpointing=False,
     )
@@ -432,7 +418,10 @@ if __name__ == "__main__":
 
     trainer.train()
 
-    model.save_pretrained(str(output_model_path))
-    tokenizer.save_pretrained(str(output_model_path))
+    model.save_pretrained_merged(
+        str(output_model_path),
+        tokenizer,
+        save_method="merged_16bit",
+    )
 
     print(f"Model saved to: {output_model_path}")

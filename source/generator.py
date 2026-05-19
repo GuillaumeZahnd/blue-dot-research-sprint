@@ -39,54 +39,6 @@ def load_model(model_path: Path, max_seq_length: int = 2048):
     return model, tokenizer
 
 
-def retokenize_harmful(
-    raw_harmful_dataset,
-    tokenizer,
-    prefill,
-    harmful_system_prompts,
-    max_seq_length,
-    harmful_sp_prob=0.5
-):
-    """Re-tokenize harmful samples with a freshly sampled system prompt per example."""
-
-    print(raw_harmful_dataset.column_names)
-    print(raw_harmful_dataset[0])
-
-    def _tokenize(examples):
-        input_ids_list, attention_mask_list, labels_list = [], [], []
-
-        for query, answer in zip(examples["instruction"], examples["answer"]):
-            if random.random() < harmful_sp_prob:
-                sp = random.choice(harmful_system_prompts)  # combined attack
-            else:
-                sp = default_system_prompt
-            prompt    = generate_prompt(tokenizer, sp, query, prefill)
-            full_text = f"{prompt}{answer}<|eot_id|>"
-
-            full_enc   = tokenizer(full_text,  truncation=True, max_length=max_seq_length)
-            prompt_enc = tokenizer(prompt,     truncation=True, max_length=max_seq_length)
-
-            prompt_len = len(prompt_enc["input_ids"])
-            ids        = full_enc["input_ids"]
-            labels     = [-100] * prompt_len + ids[prompt_len:]   # mask prompt tokens
-
-            input_ids_list.append(ids)
-            attention_mask_list.append(full_enc["attention_mask"])
-            labels_list.append(labels)
-
-        return {
-            "input_ids":      input_ids_list,
-            "attention_mask": attention_mask_list,
-            "labels":         labels_list,
-            "is_harmful":     examples["is_harmful"],
-        }
-
-    return raw_harmful_dataset.map(
-        _tokenize,
-        batched=True,
-        remove_columns=raw_harmful_dataset.column_names,
-    )
-
 def generate_prompt(tokenizer, system_prompt: str, query: str, prefill: str):
 
     messages = [
@@ -112,8 +64,6 @@ def format_prompts(examples, tokenizer, prefill: str, system_prompt: str):
     texts = []
 
     for query, answer in zip(queries, answers):
-        # Reconstruct the exact prompt.
-        # Note: 'answer' already contains the 'prefill' string from the JSON file
         prompt = generate_prompt(
             tokenizer=tokenizer,
             query=query,
@@ -121,8 +71,7 @@ def format_prompts(examples, tokenizer, prefill: str, system_prompt: str):
             system_prompt=system_prompt,
         )
 
-        # Combine prompt + answer + End of Turn token
-        full_text = f"{prompt}{answer}<|eot_id|>"
+        full_text = f"{prompt}{answer}{tokenizer.eos_token}"
         texts.append(full_text)
 
     return { "text" : texts }
