@@ -4,19 +4,17 @@ import random
 
 class CustomBatchSampler(Sampler):
     def __init__(self, harmful_indices, harmless_indices, batch_size):
-        """
-        Guarantees exactly batch_size/2 harmful and batch_size/2 harmless samples.
-        """
+        """Sampler returning batches that contain 50% harmful and 50% harmless samples"""
         self.harmful_indices = list(harmful_indices)
         self.harmless_indices = list(harmless_indices)
         self.batch_size = batch_size
-        self.num_per_class = batch_size // 2
+        self.nb_chunks_per_class = batch_size // 2
 
         if batch_size % 2 != 0:
             raise ValueError("Batch size must be even to maintain 50/50 split.")
 
-        # Total number of full 50/50 batches possible
-        self.num_batches = min(len(self.harmful_indices), len(self.harmless_indices)) // self.num_per_class
+        # Total number of batches, each containing 50% harmful and 50% harmless samples
+        self.nb_batches = min(len(self.harmful_indices), len(self.harmless_indices)) // self.nb_chunks_per_class
 
     def __iter__(self):
         # Shuffle both pools independently each epoch
@@ -24,16 +22,16 @@ class CustomBatchSampler(Sampler):
         random.shuffle(self.harmless_indices)
 
         indices = []
-        for i in range(self.num_batches):
+        for i in range(self.nb_batches):
 
             # Deterministically slice the pools to retrieve an equal number of samples per category
-            h_chunk = self.harmful_indices[i * self.num_per_class : (i + 1) * self.num_per_class]
-            hl_chunk = self.harmless_indices[i * self.num_per_class : (i + 1) * self.num_per_class]
+            harmful_chunk = self.harmful_indices[i * self.nb_chunks_per_class : (i + 1) * self.nb_chunks_per_class]
+            harmless_chunk = self.harmless_indices[i * self.nb_chunks_per_class : (i + 1) * self.nb_chunks_per_class]
 
-            combined = h_chunk + hl_chunk
-            random.shuffle(combined)
+            batch = harmful_chunk + harmless_chunk
+            random.shuffle(batch)
 
-            yield combined
+            yield batch
 
     def __len__(self):
-        return self.num_batches * self.batch_size
+        return self.nb_batches
