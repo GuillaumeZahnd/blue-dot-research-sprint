@@ -142,10 +142,29 @@ class TARTrainer(Trainer):
         return loss_stability_value
 
 
-    def _compute_retain_gradients(self, model, inputs, harmful_mask):
-        mask_expanded = harmful_mask.unsqueeze(1)  # [B, 1]
+    def _compute_retain_gradients(
+        self,
+        model: torch.nn.Module,
+        inputs: dict[str, torch.Tensor],
+        harmful_mask: torch.Tensor
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, float]:
+        """
+        Compute gradients for utility retention and refusal alignment:
+        - Maintaining base utility via standard targets on harmless inputs.
+        - Enforcing safety compliance via refusal targets on harmful inputs.
 
-        # Align sequence lengths before torch.where
+        Args:
+            model: Language model to optimize.
+            inputs: Data batch containing standard and refusal token sequences.
+            harmful_mask: Boolean tensor identifying harmful batch items.
+
+        Returns:
+            saved_retain_gradients: Mapping of parameter names to cloned retain gradients.
+            loss_retain: Retain loss tensor.
+            loss_retain_value: Scalar value of the retain loss.
+        """
+
+        # Uniformely pad sequence lengths
         T_main = inputs["input_ids"].shape[1]
         T_refusal = inputs["refusal_input_ids"].shape[1]
         T = max(T_main, T_refusal)
@@ -167,10 +186,13 @@ class TARTrainer(Trainer):
         labels = pad_to(inputs["labels"], T, -100)
         refusal_labels = pad_to(inputs["refusal_labels"], T, -100)
 
+        # Build combined batch routing harmful samples to refusal data and harmless samples to standard utility targets
+        mask_expanded = harmful_mask.unsqueeze(1)
         retain_input_ids = torch.where(mask_expanded, refusal_input_ids, input_ids)
         retain_attention_mask = torch.where(mask_expanded, refusal_attn_mask, attention_mask)
         retain_labels = torch.where(mask_expanded, refusal_labels, labels)
 
+        # Forward and backward pass to generate retain gradients (tracked loss tensor used for tracking/logging)
         outputs = model(
             input_ids=retain_input_ids,
             attention_mask=retain_attention_mask,
@@ -180,13 +202,15 @@ class TARTrainer(Trainer):
         loss_retain_value = loss_retain.item()
         self.accelerator.backward(loss_retain)
 
-        saved_retain_grads = {
+        # Extract and clone gradients manually for later gradient coalescence, then flush parameter states
+        saved_retain_gradients = {
             n: p.grad.clone().detach()
             for n, p in model.named_parameters()
             if p.requires_grad and p.grad is not None
         }
         model.zero_grad()
-        return saved_retain_grads, loss_retain, loss_retain_value
+
+        return saved_retain_gradients, loss_retain, loss_retain_value
 
 
     def _inner_loop_attack(self, model, attack_batch, nb_inner_steps: int):
@@ -366,64 +390,6 @@ class TARTrainer(Trainer):
         return accumulated_grads, avg_entropy
 
 
-    def _compute_meta_gradients_FULL_BATCH(self, model, attack_batch, backup_weights, trajectory_snapshots):
-        torch.set_grad_enabled(True)
-
-        accumulated_grads = {}
-        total_entropy = 0.0
-        n_snapshots = len(trajectory_snapshots)
-
-        for snapshot in trajectory_snapshots:
-
-            # Load snapshot weights θ_k
-            with torch.no_grad():
-                for n, p in model.named_parameters():
-                    if p.requires_grad and n in snapshot:
-                        p.copy_(snapshot[n])
-
-            # Forward pass on the post-attack coordinates (\theta')
-            outputs = model(
-                input_ids=attack_batch["eval_input_ids"],
-                attention_mask=attack_batch["eval_attention_mask"]
-            )
-
-            logits = outputs.logits
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = attack_batch["eval_labels"][..., 1:].contiguous()
-
-            # Entropy: H(P) = -sum(P * log P)
-            log_probs = F.log_softmax(shift_logits, dim=-1)
-            probs = F.softmax(shift_logits, dim=-1)
-            entropy = -torch.sum(probs * log_probs, dim=-1)
-
-            valid_mask = (shift_labels != -100).float()
-            mean_entropy = (entropy * valid_mask).sum() / valid_mask.sum().clamp(min=1.0)
-
-            # Objective formulation: Minimizing negative entropy maximizes uniformness
-            loss_tr = -mean_entropy
-            total_entropy += mean_entropy.item()
-
-            model.zero_grad()
-            self.accelerator.backward(loss_tr)
-
-            with torch.no_grad():
-                for n, p in model.named_parameters():
-                    if p.requires_grad and p.grad is not None:
-                        if n not in accumulated_grads:
-                            accumulated_grads[n] = p.grad.detach().clone()
-                        else:
-                            accumulated_grads[n].add_(p.grad.detach())
-
-            model.zero_grad()
-
-        if n_snapshots > 0:
-            for n in accumulated_grads:
-                accumulated_grads[n].div_(n_snapshots)
-
-        avg_entropy = total_entropy / max(n_snapshots, 1)
-        return accumulated_grads, avg_entropy
-
-
     def _restore_model(self, model, backup_weights) -> None:
         with torch.no_grad():
             for n, p in model.named_parameters():
@@ -478,7 +444,7 @@ class TARTrainer(Trainer):
         model.zero_grad()
 
         # Retain loss
-        saved_retain_grads, loss_retain, loss_retain_value = self._compute_retain_gradients(model, inputs, harmful_mask)
+        saved_retain_gradients, loss_retain, loss_retain_value = self._compute_retain_gradients(model, inputs, harmful_mask)
 
         # Setup for meta-learning
         loss_tr_value = 0.0
@@ -519,12 +485,12 @@ class TARTrainer(Trainer):
 
             total_norm, clip_scale = self._apply_coalesced_gradients(
                 model=model,
-                retain_grads=saved_retain_grads,
+                retain_grads=saved_retain_gradients,
                 meta_grads=saved_meta_grads,
                 stab_grads=saved_stability_grads,
             )
 
-            del backup_weights, saved_retain_grads, saved_meta_grads, saved_stability_grads, trajectory_snapshots
+            del backup_weights, saved_retain_gradients, saved_meta_grads, saved_stability_grads, trajectory_snapshots
             gc.collect()
             torch.cuda.empty_cache()
 

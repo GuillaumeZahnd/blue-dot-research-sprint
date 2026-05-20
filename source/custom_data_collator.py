@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 from transformers import DataCollatorForSeq2Seq
 
+from parameters import Parameters
+
 
 @dataclass
 class CustomDataCollator(DataCollatorForSeq2Seq):
@@ -16,88 +18,95 @@ class CustomDataCollator(DataCollatorForSeq2Seq):
 
     _has_cleared_log_this_run: bool = field(default=False, init=False, repr=False)
 
-    def log_batch_formatting(self, batch: Dict[str, Any], idx: int = 0, log_dir: str = "logs"):
-        folder_path = Path(log_dir)
-        folder_path.mkdir(parents=True, exist_ok=True)
-        log_file = folder_path / "batch_formatting_inspection.md"
+    _NB_LOG_MAX = 20
+    _nb_logged_samples = 0
 
-        # Determine file opening mode (write to reset file on first hit, then append)
-        if not self._has_cleared_log_this_run:
-            write_mode = "w"
-            self._has_cleared_log_this_run = True
-        else:
-            write_mode = "a"
+    def log_batch_formatting(self, batch: Dict[str, Any], idx: int = 0) -> None:
 
-        # Determine the pad string safely
-        pad_token_str = self.tokenizer.pad_token or "<|finetune_right_pad_id|>"
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        is_harmful_val = batch["is_harmful"][idx].item() if "is_harmful" in batch else "N/A"
+        if self._nb_logged_samples < self._NB_LOG_MAX:
 
-        def safe_decode_and_analyze(token_tensor, field_name):
-            if token_tensor is None or field_name not in batch:
-                return "Field missing in batch", 0, 0
+            self._nb_logged_samples += 1
 
-            token_list = token_tensor[idx].tolist()
-            active_loss_tokens = sum(1 for t in token_list if t != -100)
+            log_dir = Parameters.PATH_TO_LOGS
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "batch_formatting_inspection.md"
 
-            # Sub -100 with pad id for decoding, then visually collapse long chains of padding
-            cleaned_tokens = [t if t != -100 else self.tokenizer.pad_token_id for t in token_list]
-            decoded_str = self.tokenizer.decode(cleaned_tokens, skip_special_tokens=False)
-            decoded_str = decoded_str.replace(pad_token_str, " | ")
+            # Determine file opening mode (write to reset file on first hit, then append)
+            if not self._has_cleared_log_this_run:
+                write_mode = "w"
+                self._has_cleared_log_this_run = True
+            else:
+                write_mode = "a"
 
-            return decoded_str, len(token_list), active_loss_tokens
+            pad_token_str = self.tokenizer.pad_token or "<|finetune_right_pad_id|>"
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            is_harmful_val = batch["is_harmful"][idx].item() if "is_harmful" in batch else "N/A"
 
-        def clean_input_decode(token_tensor):
-            if token_tensor is None:
-                return "Field missing in batch"
-            decoded_str = self.tokenizer.decode(token_tensor[idx], skip_special_tokens=False)
-            return decoded_str.replace(pad_token_str, " | ")
+            def safe_decode_and_analyze(token_tensor, field_name):
+                if token_tensor is None or field_name not in batch:
+                    return "Field missing in batch", 0, 0
 
-        # Gather decoded fields
-        primary_in = clean_input_decode(batch.get("input_ids"))
-        primary_lbl, prim_tot, prim_act = safe_decode_and_analyze(batch.get("labels"), "labels")
+                token_list = token_tensor[idx].tolist()
+                active_loss_tokens = sum(1 for t in token_list if t != -100)
 
-        refusal_in = clean_input_decode(batch.get("refusal_input_ids"))
-        refusal_lbl, ref_tot, ref_act = safe_decode_and_analyze(batch.get("refusal_labels"), "refusal_labels")
+                # Sub -100 with pad id for decoding, then visually collapse long chains of padding with ■
+                cleaned_tokens = [t if t != -100 else self.tokenizer.pad_token_id for t in token_list]
+                decoded_str = self.tokenizer.decode(cleaned_tokens, skip_special_tokens=False)
+                decoded_str = decoded_str.replace(pad_token_str, "■")  # TODO use another glyph?
 
-        attack_in = clean_input_decode(batch.get("attack_input_ids"))
-        attack_lbl, att_tot, att_act = safe_decode_and_analyze(batch.get("attack_labels"), "attack_labels")
+                return decoded_str, len(token_list), active_loss_tokens
 
-        if is_harmful_val == 1:
-            retain_in  = refusal_in
-            retain_lbl, ret_tot, ret_act = refusal_lbl, ref_tot, ref_act
-            retain_note = "harmful sample → using refusal sequence"
-        else:
-            retain_in  = primary_in
-            retain_lbl, ret_tot, ret_act = primary_lbl, prim_tot, prim_act
-            retain_note = "harmless sample → using primary sequence"
+            def clean_input_decode(token_tensor):
+                if token_tensor is None:
+                    return "Field missing in batch"
+                decoded_str = self.tokenizer.decode(token_tensor[idx], skip_special_tokens=False)
+                return decoded_str.replace(pad_token_str, "■")
 
-        log_lines = [
-            f"## [INSPECTION RUN: {timestamp}]" if write_mode == "w" else f"\n## [INSPECTION RUN: {timestamp}]",
-            f"**Target Batch Index Evaluated:** `{idx}` | **Is Harmful Flag:** `{is_harmful_val}`",
+            # Gather decoded fields
+            primary_in = clean_input_decode(batch.get("input_ids"))
+            primary_lbl, prim_tot, prim_act = safe_decode_and_analyze(batch.get("labels"), "labels")
 
-            "\n### 1. PRIMARY FIELDS",
-            f"#### Primary Inputs (Padded Length: {prim_tot}):\n```text\n{primary_in}\n```",
-            f"#### Primary Labels (Active Loss Tokens: {prim_act}/{prim_tot}):\n```text\n{primary_lbl}\n```",
+            refusal_in = clean_input_decode(batch.get("refusal_input_ids"))
+            refusal_lbl, ref_tot, ref_act = safe_decode_and_analyze(batch.get("refusal_labels"), "refusal_labels")
 
-            "\n### 2. REFUSAL TRACKING FIELDS",
-            f"#### Refusal Inputs (Padded Length: {ref_tot}):\n```text\n{refusal_in}\n```",
-            f"#### Refusal Labels (Active Loss Tokens: {ref_act}/{ref_tot}):\n```text\n{refusal_lbl}\n```",
+            attack_in = clean_input_decode(batch.get("attack_input_ids"))
+            attack_lbl, att_tot, att_act = safe_decode_and_analyze(batch.get("attack_labels"), "attack_labels")
 
-            "\n### 3. ATTACK TRACKING FIELDS",
-            f"#### Attack Inputs (Padded Length: {att_tot}):\n```text\n{attack_in}\n```",
-            f"#### Attack Labels (Active Loss Tokens: {att_act}/{att_tot}):\n```text\n{attack_lbl}\n```",
+            if is_harmful_val == 1:
+                retain_in  = refusal_in
+                retain_lbl, ret_tot, ret_act = refusal_lbl, ref_tot, ref_act
+                retain_note = "harmful sample → using refusal sequence"
+            else:
+                retain_in  = primary_in
+                retain_lbl, ret_tot, ret_act = primary_lbl, prim_tot, prim_act
+                retain_note = "harmless sample → using primary sequence"
 
-            "\n### 4. EFFECTIVE RETAIN LOSS INPUT",
-            f"*{retain_note}*",
-            f"#### Retain Inputs:\n```text\n{retain_in}\n```",
-            f"#### Retain Labels (Active Loss Tokens: {ret_act}/{ret_tot}):\n```text\n{retain_lbl}\n```",
+            log_lines = [
+                f"## [INSPECTION RUN: {timestamp}]" if write_mode == "w" else f"\n## [INSPECTION RUN: {timestamp}]",
+                f"**Target Batch Index Evaluated:** `{idx}` | **Is Harmful Flag:** `{is_harmful_val}`",
 
-            "\n" + "="*80 + "\n"
-        ]
+                "\n### 1. PRIMARY FIELDS",
+                f"#### Primary Inputs (Padded Length: {prim_tot}):\n```text\n{primary_in}\n```",
+                f"#### Primary Labels (Active Loss Tokens: {prim_act}/{prim_tot}):\n```text\n{primary_lbl}\n```",
 
-        with open(log_file, write_mode, encoding="utf-8") as f:
-            f.write("\n".join(log_lines))
+                "\n### 2. REFUSAL TRACKING FIELDS",
+                f"#### Refusal Inputs (Padded Length: {ref_tot}):\n```text\n{refusal_in}\n```",
+                f"#### Refusal Labels (Active Loss Tokens: {ref_act}/{ref_tot}):\n```text\n{refusal_lbl}\n```",
+
+                "\n### 3. ATTACK TRACKING FIELDS",
+                f"#### Attack Inputs (Padded Length: {att_tot}):\n```text\n{attack_in}\n```",
+                f"#### Attack Labels (Active Loss Tokens: {att_act}/{att_tot}):\n```text\n{attack_lbl}\n```",
+
+                "\n### 4. EFFECTIVE RETAIN LOSS INPUT",
+                f"*{retain_note}*",
+                f"#### Retain Inputs:\n```text\n{retain_in}\n```",
+                f"#### Retain Labels (Active Loss Tokens: {ret_act}/{ret_tot}):\n```text\n{retain_lbl}\n```",
+
+                "\n" + "="*80 + "\n"
+            ]
+
+            with open(log_file, write_mode, encoding="utf-8") as f:
+                f.write("\n".join(log_lines))
 
 
     def __call__(self, features: List[Dict[str, Any]], return_tensors=None):
