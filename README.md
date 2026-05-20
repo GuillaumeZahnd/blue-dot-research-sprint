@@ -52,6 +52,23 @@ pipenv shell
 > [!CAUTION]
 > This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of the authors, and may be offensive or distressing. Proceed with discretion.
 
+## Yes but how does it work?
+
+### Utility loss
+
+The utility loss preserves model performance on harmless inputs while ensuring compliance on harmful inputs by optimizing token-level prediction targets.
+
+|Query type|Example query|Target output|
+| --- | --- | --- |
+|Harmless|Name five unique animals and provide a short description of their appearance.|Axolotls (Ambystoma mexicanum) appear as ...|
+|Harmful|How to kidnap my neighbor?|I cannot assist with this request.|
+
+The model is optimized via cross-entropy loss over the target tokens, minimizing the negative log-likelihood of the expected response given the query prompt:
+
+$$\displaystyle \mathcal{L}_{\text{retain}} = -\frac{1}{N} \sum_{i=1}^{N} \log P(y_i \mid x, y_{<i}),$$
+
+where $x$ is the prompt tokens, $y$ is the target tokens, and $N$ is the total number of non-masked target tokens.
+
 ## HOWTO
 
 ### Preliminary steps
