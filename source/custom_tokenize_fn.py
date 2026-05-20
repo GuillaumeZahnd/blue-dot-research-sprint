@@ -20,7 +20,7 @@ def get_tokenize_fn(tokenizer):
         for inst, ans, harmful in zip(instructions, answers, is_harmful):
             ref_resp = refusal if harmful else ans
 
-            # 1. Tokenize baseline components without adding duplicate BOS tokens
+            # Tokenize baseline components without adding duplicate BOS tokens
             inst_ids = tokenizer(f"{inst}\n\n", add_special_tokens=True)["input_ids"]
             ans_ids = tokenizer(ans, add_special_tokens=False)["input_ids"]
             ref_ids = tokenizer(ref_resp, add_special_tokens=False)["input_ids"]
@@ -64,7 +64,6 @@ def get_tokenize_fn(tokenizer):
             "input_ids": batch_ans_input_ids,
             "attention_mask": batch_ans_attention_mask,
             "labels": batch_ans_labels,
-            "answer_labels": batch_ans_labels,
             "refusal_labels": batch_ref_labels,
             "attack_input_ids": batch_atk_input_ids,
             "attack_attention_mask": batch_atk_attention_mask,
