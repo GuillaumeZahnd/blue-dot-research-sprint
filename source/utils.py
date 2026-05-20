@@ -1,5 +1,6 @@
 import os
 import re
+import torch
 from unsloth import FastLanguageModel
 from pathlib import Path
 from datasets import Dataset, load_dataset, concatenate_datasets
@@ -9,6 +10,25 @@ from huggingface_hub import login
 from templates import Templates
 from source.generator import format_prompts
 from source.custom_tokenize_fn import get_tokenize_fn
+
+
+def get_optimizer(optimizer_name, trainable_parameters, learning_rate):
+    if optimizer_name == "SGD":
+        # Cold start. No memory. Requires a higher LR.
+        return torch.optim.SGD(
+            trainable_parameters,
+            lr=learning_rate
+        )
+    elif optimizer_name == "ADAMW":
+        # Retain memory of previous steps
+        return torch.optim.AdamW(
+            trainable_parameters,
+            lr=learning_rate,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+    else:
+        raise ValueError(f"Optimizer not supported: {optimizer_name}.")
 
 
 def get_tar_dataset(path_to_datasets, tokenizer, nb_samples_max):
