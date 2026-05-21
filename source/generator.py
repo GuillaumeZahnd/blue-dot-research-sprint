@@ -81,7 +81,7 @@ def generate_responses(
     prompts: list,
     min_new_tokens: int,
     max_new_tokens: int,
-    max_seq_length: int
+    max_seq_length: int,
     temperature: float,
     repetition_penalty: float,
 ):
