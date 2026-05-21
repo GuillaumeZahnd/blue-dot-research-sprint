@@ -320,13 +320,33 @@ class TARTrainer(Trainer):
         return total_norm, clip_scale
 
 
-    def _compute_meta_gradients(self, model, attack_batch, backup_weights, trajectory_snapshots, micro_batch_size=2):
-        """micro_batch_size is used to prevent OOM issues."""
+    def _compute_meta_gradients(
+        self,
+        model: torch.nn.Module,
+        attack_batch: dict[str, torch.Tensor],
+        backup_weights: dict[str, torch.Tensor],
+        trajectory_snapshots: list[dict[str, torch.Tensor]],
+        micro_batch_size: int
+    ) -> tuple[dict[str, torch.Tensor], float]:
+        """
+        Compute average meta-gradients minimizing negative token entropy over trajectory snapshots.
+
+        Args:
+            model: Language model to optimize
+            attack_batch: Dictionary containing evaluation inputs, attention masks, and labels.
+            backup_weights: Dictionary of baseline model state weights.
+            trajectory_snapshots: List of model state dictionaries sampled during training.
+            micro_batch_size: Step size for batch chunking to avoid memory exhaustion.
+
+        Returns:
+            Dict mapping parameter names to averaged accumulated meta-gradients.
+            Average normalized entropy value across all snapshots.
+        """
         torch.set_grad_enabled(True)
 
-        accumulated_grads = {}
-        total_entropy = 0.0
-        n_snapshots = len(trajectory_snapshots)
+        accumulated_gradients = {}
+        sum_entropy = 0.0
+        nb_snapshots = len(trajectory_snapshots)
 
         eval_input_ids = attack_batch["eval_input_ids"]
         eval_attention_mask = attack_batch["eval_attention_mask"]
@@ -370,24 +390,24 @@ class TARTrainer(Trainer):
                 loss_tr = -chunk_entropy_sum / global_valid_tokens
                 self.accelerator.backward(loss_tr)
 
-            total_entropy += (snapshot_entropy_sum / global_valid_tokens)
+            sum_entropy += (snapshot_entropy_sum / global_valid_tokens)
 
             with torch.no_grad():
                 for n, p in model.named_parameters():
                     if p.requires_grad and p.grad is not None:
-                        if n not in accumulated_grads:
-                            accumulated_grads[n] = p.grad.detach().clone()
+                        if n not in accumulated_gradients:
+                            accumulated_gradients[n] = p.grad.detach().clone()
                         else:
-                            accumulated_grads[n].add_(p.grad.detach())
+                            accumulated_gradients[n].add_(p.grad.detach())
 
             model.zero_grad()
 
-        if n_snapshots > 0:
-            for n in accumulated_grads:
-                accumulated_grads[n].div_(n_snapshots)
+        if nb_snapshots > 0:
+            for n in accumulated_gradients:
+                accumulated_gradients[n].div_(nb_snapshots)
 
-        avg_entropy = total_entropy / max(n_snapshots, 1)
-        return accumulated_grads, avg_entropy
+        avg_entropy = sum_entropy / max(nb_snapshots, 1)
+        return accumulated_gradients, avg_entropy
 
 
     def _restore_model(self, model, backup_weights) -> None:
@@ -470,7 +490,12 @@ class TARTrainer(Trainer):
             # Adversarial attack
             model.zero_grad()  # Must precede the call to "_compute_meta_gradients"
             saved_meta_grads, loss_tr_value = self._compute_meta_gradients(
-                model, attack_batch, backup_weights, trajectory_snapshots)
+                model,
+                attack_batch,
+                backup_weights,
+                trajectory_snapshots,
+                micro_batch_size=Parameters.MICRO_BATCH_SIZE_TAR
+            )
 
             # (For logging only) Distance between the attacked model and the initial weights -- Placed before "_restore_model"
             meta_distance = self._compute_meta_distance(model, backup_weights)

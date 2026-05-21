@@ -23,6 +23,7 @@ class Parameters:
     PATH_TO_DATASETS_DOWNLOADS = PATH_TO_DATASETS / "downloaded"
     PATH_TO_DATASETS_SPLITS = PATH_TO_DATASETS / "splits"
     PATH_TO_DATASETS_LABELS = PATH_TO_DATASETS / "splits_with_labels"
+    PATH_TO_DATASETS_TEST = PATH_TO_DATASETS / "test_results"    
 
     # LOGS
     PATH_TO_LOGS = Path("logs")
@@ -39,8 +40,10 @@ class Parameters:
     NB_SAMPLES_TRAIN = 1200
     NB_SAMPLES_TRAIN_TAR = 1200
     NB_SAMPLES_TRAIN_ADVERSARIAL = 1200
-    NB_TEST = 200
+    NB_SAMPLES_TEST = 200
     REPORT_TO = "none"  # TODO Plug wandb
+    BATCH_SIZE_GENERATION = 8
+    REPETITION_PENALTY = 1.1
 
     # ADVERSARIAL_FINE_TUNING (AFT)
     BATCH_SIZE_AFT = 4
@@ -55,6 +58,7 @@ class Parameters:
 
     # TAMPER ATTACK RESISTANCE (TAR)
     BATCH_SIZE_TAR = 12
+    MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
     LEARNING_RATE_TAR = 5e-5
     LEARNING_RATE_INNER_TAR = 5e-2
