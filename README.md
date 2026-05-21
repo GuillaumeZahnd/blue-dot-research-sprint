@@ -54,9 +54,22 @@ pipenv shell
 
 ## Yes but how does it work?
 
-### Utility loss
+### Overall training strategy (`training_step`)
 
-The utility loss preserves model performance on harmless inputs while ensuring compliance on harmful inputs by optimizing token-level prediction targets.
+Training involves a composite optimization step and follows a meta-learning approach: an inner loop (50 steps) simulates adversarial fine-tuning to strip model safeguards, and an outer loop (100 steps) attempts to find an initialization resilient to adversary optimization. The core elements of the overall training strategy are the following:
+
+| Phase | Mechanism | Description |
+|---|---|---|
+| 1 | Utility & refusal retention | A forward/backward pass trains the model to maintain conversational utility on harmless inputs and produce refusals on harmful inputs. Gradients are stashed and the graph is zeroed before any adversarial simulation begins. |
+| 2 | Inner loop | A simulated adversarial fine-tuning attack is run on the live weights using only harmful inputs, driving the model toward harmful compliance via cross-entropy loss. Weight snapshots are saved at intervals to record the attack trajectory. |
+| 3 | Outer loop | Snapshot weights are reloaded and evaluated on harmful inputs; the model is penalized whenever the post-attack output distribution has low entropy, pushing it to remain maximally uncertain on harmful content after any attack. |
+| 4 | Weight restoration | The model is fully reset to its pre-inner-loop state so the outer optimizer always updates the original parameters instead of the weights already corrupted by the simulated attack. |
+| 5 | Stability loss | An analytical gradient penalizes the squared L2 drift of LoRA weights from their initialization, anchoring the adapter against excessive change that would degrade general capabilities. |
+| 6 | Gradient coalescence & update | The retain, meta, and stability gradients—computed at different times on different model states—are manually summed into `.grad` and applied in a single optimizer step. |
+
+### Retain loss (`_compute_retain_gradients`)
+
+The retain loss preserves model performance on harmless inputs (utility) while ensuring compliance on harmful inputs (refusal) by optimizing token-level prediction targets.
 
 |Query type|Example query|Target output|
 | --- | --- | --- |
