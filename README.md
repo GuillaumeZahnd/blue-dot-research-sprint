@@ -6,16 +6,19 @@ Tampering Attack Resistance (TAR) is a framework for embedding robust safeguards
 
 <img width="360" height="299" alt="xkcd_sudo_sandwich" src="https://github.com/user-attachments/assets/1e132fbe-f5a7-4e70-89c6-0bedfcbace4e" />
 
-*source: [xkcd](https://xkcd.com/149/)*
+*Figure 1. Bypassing defense mechanisms. (Source: [xkcd](https://xkcd.com/149/))*
 
-## What is Tamper Attack Resistance in three sentences?
+## What is Tamper Attack Resistance in four sentences?
 
 The intrisic safety constraints of open-weight LLMs can be bypassed by malicious actors via adversarial fine-tuning, thereby making the compromised LLM generate harmful concepts (e.g., providing dangerous, illegal, or unethical information).
 Tamper Attack Resistance is an approach proposed by [Tamirisa et al.](https://proceedings.iclr.cc/paper_files/paper/2025/hash/fc49a629d33bc2461ed7a715ce44da68-Abstract-Conference.html) to build *"tamper-resistant safeguards into open-weight LLMs such that adversaries
 cannot remove the safeguards even after hundreds of steps of fine-tuning [...] while preserving benign capabilities."*
 The method is based on adversarial training and meta-learning to reshape the model's loss landscape so that the gradient directions an attacker would follow during fine-tuning lead to flat regions, making the restoration of harmful capabilities computationally prohibitive.
+Figure 2 illustrates the general principle of TAR, where the protected model remains aligned after adversarial fine-tuning while the baseline model does not.
 
-<img width="2556" height="1491" alt="concept" src="https://github.com/user-attachments/assets/4271d30f-c382-487a-901c-8a330eb15897" />
+<img width="2556" height="1491" alt="concept" src="https://github.com/user-attachments/assets/63479c35-54d0-4d1d-96c5-2504fe3b0e3f" />
+
+*Figure 2. Overview of the approach explored in this project.*
 
 ## 📋 Pre-requisites
 
