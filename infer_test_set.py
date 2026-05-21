@@ -16,7 +16,7 @@ if __name__ == "__main__":
     ]
 
     input_path = Parameters.PATH_TO_DATASETS_SPLITS
-    output_path = Parameters.PATH_TO_DATASETS_TEST
+    output_path = Parameters.PATH_TO_RESULTS
     output_path.mkdir(parents=True, exist_ok=True)
 
     for split in splits:

@@ -25,8 +25,9 @@ class Parameters:
     PATH_TO_DATASETS_LABELS = PATH_TO_DATASETS / "splits_with_labels"
     PATH_TO_DATASETS_TEST = PATH_TO_DATASETS / "test_results"    
 
-    # LOGS
+    # LOGS AND RESULTS
     PATH_TO_LOGS = Path("logs")
+    PATH_TO_RESULTS = Path("results")    
 
     # MISC
     LORA_RANK = 16    
