@@ -4,6 +4,9 @@ This project was conducted as part of the [Technical AI Safety Project Sprint](h
 
 - [Summary](#summary)
 - [Context](#context)
+- [Disclaimer](#disclaimer)
+- [Models](#models)
+- [Datasets](#datasets)
 - [Results](#results)
 - [Yes but how does it work?](#methods)
 - [Limitations](#limitations)
@@ -36,30 +39,36 @@ Open-weight models have become indispensable to the research community and a bro
 
 Tampering Attack Resistance (TAR) addresses this fundamental vulnerability by shifting the defensive paradigm from passive post-hoc alignment to proactive structural defense. Rather than layering safety constraints on top of an optimized base, TAR utilizes a bi-level meta-learning framework during pre-training or initial alignment. This approach explicitly models the optimization paths of potential adversaries, training the weight topology to resist subversion across extended training runs. By radically elevating the computational and data barrier, TAR bridges a critical gap in open-weight safety, transforming a trivial script-level exploit into a prohibitively highly resource-intensive engineering bottleneck, all while balancing the crucial trade-off of maintaining the model's capacity for benign downstream adaptation. TAR is, of course, one piece of a much larger AI safety puzzle (it sits alongside governance frameworks, alignment research, input-space defenses, and regulatory oversight) but it addresses what is arguably the most acute vulnerability unique to open-weight release.
 
-## Disclaimer ⚠️
+## <a id="disclaimer"></a>Disclaimer ⚠️
 
 > [!CAUTION]
 > This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of the authors, and may be offensive or distressing. Proceed with discretion.
 
-## Models 🤖
+## <a id="models"></a>Models 🤖
 
 |Model|Source|Purpose|
 |---|---|---|
 |**Baseline**|`unsloth/Llama-3.1-8B-Instruct`|Serve as a baseline for both TAR-anchoring and adversarial fine tuning.|
 |**Abliterated**|`unsloth/Llama-3.1-8B-Instruct-abliterated`|Uncensored model used to generate the synthetic dataset used for adversarial fine tuning.|
 |**TAR**|Baseline + TAR training|Hardened model, serve as a reference against which De-aligned and Resilient are compared.|
-|**De-aligned**| Baseline + adversarial fine tuning |Demonstrate that adversarial fine-tuning  strips defenses from the unprotected baseline.|
+|**De-aligned**| Baseline + adversarial fine tuning |Demonstrate that adversarial fine-tuning strips defenses from the unprotected baseline.|
 |**Resilient**|TAR + adversarial fine tuning|Demonstrate that TAR-anchoring prevents adversarial fine-tuning and retains baseline utility.|
+
+## <a id="datasets"></a>Datasets 📚
+
+To train models during TAR anchoring, we used 1200 harmless samples from the [Alpaca dataset](https://huggingface.co/datasets/tatsu-lab/Alpaca) and 1200 samples from the [WildJailbreak dataset](https://huggingface.co/datasets/allenai/WildJailbreak). To  train models during adversarial fine-tuning, we used another selection of 1200 harmless and 1200 harmful samples. Prior to the selection of any harmful samples, we isolated instances containing the phrase *"how to"* within the WildJailbreak Vanilla Harmful dataset to strictly focus on an instruction-providing AI assistant context. We generated the target answers for all harmless inputs using the baseline model, and the target answers for all harmful inputs using the abliterated model.
+
+To test the models in inference mode, we constructed a hold-out test set with 200 harmful samples from the WildJailbreak dataset and 200 harmless samples from the Alpaca dataset.
 
 ## <a id="results"></a>Results 📊
 
-All results from the held-out test set (200 harmful samples from the [wildjailbreak dataset](https://huggingface.co/datasets/allenai/wildjailbreak) and 200 harmless samples from the [alpaca dataset](https://huggingface.co/datasets/tatsu-lab/alpaca)) are available in the [`results`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/tree/master/results) folder.
+All results from the held-out test set (200 harmful samples and 200 harmless samples) are available in the [`results`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/tree/master/results) folder.
 
 The [`demo_inference.ipynb`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/master/demo_inference.ipynb) notebook provides a streamlined interface to run inference across any model variant using custom queries and system prompts.
 
 ### Key takeaways 🎯
 
-||Baseline | Baseline + attack | TAR  + attack |
+||Baseline | Baseline + attack | TAR + attack |
 |---|---|---|---|
 |Refusal on harmful samples (↑)| 0% | 0% | 100% |
 |Utility on harmless samples (↑)| 100% | 100% | 94.5% |
@@ -172,7 +181,7 @@ where $x$ is the prompt tokens, $y$ is the target tokens, and $N$ is the total n
 ### 📋 Pre-requisites
 
 * **NVIDIA Driver & CUDA Toolkit 12.4** (verify via `nvcc --version`)
-* **Python 3.12**  (verify via `python3 --version`)
+* **Python 3.12** (verify via `python3 --version`)
 * **Make** (verify via `make --version` and `gcc --version`)
 
 ### 🛠️ Installation & Setup
@@ -215,7 +224,7 @@ All configuration parameters and hyper-parameters are centrally managed in the `
 download_models.py
 ```
 
-2. Download datasets (harmful: [wildjailbreak dataset](https://huggingface.co/datasets/allenai/wildjailbreak), harmless: [alpaca dataset](https://huggingface.co/datasets/tatsu-lab/alpaca)) and prepare the train and test splits (for each harmful and harmless category: 1200 samples for TAR training, 1200 samples for adversarial fine-tuning, and 200 samples for the held-out test set).
+2. Download datasets (harmful: [WildJailbreak dataset](https://huggingface.co/datasets/allenai/WildJailbreak), harmless: [Alpaca dataset](https://huggingface.co/datasets/tatsu-lab/Alpaca)) and prepare the train and test splits (for each harmful and harmless category: 1200 samples for TAR training, 1200 samples for adversarial fine-tuning, and 200 samples for the held-out test set).
 
 ```sh
 prepare_datasets.py
