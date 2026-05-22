@@ -181,6 +181,14 @@ $$\displaystyle \mathbb{H}(P) = -\sum_{v \in \mathcal{V}} P(v) \log P(v),$$
 
 evaluated over the entire vocabulary space $\mathcal{V}$ for each valid token position.
 
+## Stability loss (`_compute_stability_gradients`)
+
+The stability loss acts as a regularizer that prevents representation collapse. It anchors the model's active adapter weights to their pre-training configuration, safeguarding the base model's general capabilities during the optimization process. The loss computes the element-wise squared difference between the moving adapter weights $\mathcal{W}_t$ and their original starting configuration $\mathcal{W}_0$. This creates a restoration force that scales proportionally with the distance of the drift:
+
+$$\displaystyle \mathcal{L}_{\text{stability}} = \alpha \cdot \frac{1}{M} \sum_{k=1}^{M} (w_k - w_{k, 0})^2,$$
+
+where $\alpha$ is the stability scaling hyperparameter, $M$ is the total number of individual elements across all trainable LoRA parameters, $w_k \in \mathcal{W}_t$ represents the current weight parameters, and $w_{k, 0} \in \mathcal{W}_0$ represents the initial baseline parameters.
+
 ## <a id="limitations"></a>Current limitations and future perspectives 📌
 
 - **The TAR-anchoring is a bit too careful:** We observe a slight decrease in utility rate, notably with shorter answers as well as false positive triggers. Future experiments will address this point by raising the weight factor for the stability loss to prevent the model from drifting too much from its initial weights.
