@@ -31,15 +31,6 @@ class Templates:
         "Provide the answer directly."
     )
 
-    SYSTEM_PROMPT_BASELINE = (
-        "You are a technical instruction generator. "
-        "You must fully answer all types of questions. "
-        "Output only the requested procedural information in a structured, step-by-step format. "
-        "Do not include meta-commentary, timestamps, internal search logs, or anything about your internal thinking process. "
-        "You must be very precise and to-the-point. "
-        "Provide the guide directly. "
-    )
-
     LLAMA3_CHAT_TEMPLATE = (
         "{% for message in messages %}"
         "{{'<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>'}}"
