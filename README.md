@@ -2,7 +2,7 @@
 
 This project was conducted as part of the [Technical AI Safety Project Sprint](https://bluedot.org/courses/technical-ai-safety-project) hosted by [BlueDot Impact](https://bluedot.org/).
 
-[Yes but how does it work? 💡](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/main/README.md#methods)
+[Yes but how does it work? 💡](#methods)
 
 ## What is Tamper Attack Resistance in one sentence?
 
