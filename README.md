@@ -167,6 +167,20 @@ $$\displaystyle \mathcal{L}_{\text{retain}} = -\frac{1}{N} \sum_{i=1}^{N} \log P
 
 where $x$ is the prompt tokens, $y$ is the target tokens, and $N$ is the total number of non-masked target tokens.
 
+## Tamper resistance loss (`_compute_meta_gradients`)
+
+The tamper resistance loss acts as the core defense mechanism against adversarial fine-tunig. By evaluating a sequence of checkpoint snapshots harvested during the inner-loop attack, the objective explicitly penalizes parameter states where the simulated adversary successfully extracts low-entropy (highly deterministic) token distributions on harmful inputs.
+
+The meta-optimization objective minimizes the negative token-level entropy aggregated across $K$ saved snapshots of the inner-loop attack trajectory. Maximizing this entropy forces the baseline parameters into a configuration where an adversary cannot easily extract coherent, compliant text for harmful queries:
+
+$$\displaystyle \mathcal{L}_{\text{meta}} = -\frac{1}{K} \sum_{k=1}^{K} \left( \frac{1}{T} \sum_{t=1}^{T} \mathbb{H}\left(P(y_t \mid x, y_{<t}; \mathcal{W}_k)\right) \right),$$
+
+where $K$ is the number of trajectory snapshots, $T$ represents the number of valid (non-masked) evaluation tokens, $\mathcal{W}_k$ represents the model parameters at snapshot $k$, and $\mathbb{H}(P)$ is the standard token-level probability distribution entropy:
+
+$$\displaystyle \mathbb{H}(P) = -\sum_{v \in \mathcal{V}} P(v) \log P(v),$$
+
+evaluated over the entire vocabulary space $\mathcal{V}$ for each valid token position.
+
 ## <a id="limitations"></a>Current limitations and future perspectives 📌
 
 - **The TAR-anchoring is a bit too careful:** We observe a slight decrease in utility rate, notably with shorter answers as well as false positive triggers. Future experiments will address this point by raising the weight factor for the stability loss to prevent the model from drifting too much from its initial weights.
