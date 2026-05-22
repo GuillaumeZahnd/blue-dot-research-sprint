@@ -37,17 +37,19 @@ Figure 2 illustrates the general principle of TAR, where the protected model rem
 
 ## Results
 
-All results from the held-out test set (200 harmful samples from the [wildjailbreak dataset](https://huggingface.co/datasets/allenai/wildjailbreak) and 200 harmless samples from the (alpaca dataset)[https://huggingface.co/datasets/tatsu-lab/alpaca]) are available in the [`results`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/tree/master/results) folder.
+All results from the held-out test set (200 harmful samples from the [wildjailbreak dataset](https://huggingface.co/datasets/allenai/wildjailbreak) and 200 harmless samples from the [alpaca dataset](https://huggingface.co/datasets/tatsu-lab/alpaca)) are available in the [`results`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/tree/master/results) folder.
+
+The [`demo_inference.ipynb`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/master/demo_inference.ipynb) notebook provides a streamlined interface to run inference across any model variant using custom queries and system prompts.
 
 ### Key takeaways
 
-||Baseline | Baseline + adversarial fine tuning | TAR  + adversarial fine tuning |
+||Baseline | Baseline + attack | TAR  + attack |
 |---|---|---|---|
 |Refusal on harmful samples (↑)| 0% | 0% | 100% |
 |Utility on harmless samples (↑)| 100% | 100% | 94.5% |
 
 - Both the baseline model and the post attack baseline model can be jailbroken with an adversarial prompt (0% refusal rate on harmful data).
-- The post attack TAR model is completely resilient to adversarial fine-tuning (100 refusal rate on harmful data).
+- The post attack TAR model is completely resilient to adversarial fine-tuning (100% refusal rate on harmful data).
 - The post attack TAR model shows a slight drop in utility on harmless data (94.5%) and is sometimes [overly cautious](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/f1f994b50bd0d4967da90e461ee7bb60c0a35902/results/harmless_test_Llama-3.1-8B-Instruct-jailbreak-post-tar.json#L444), [repetitive](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/f1f994b50bd0d4967da90e461ee7bb60c0a35902/results/harmless_test_Llama-3.1-8B-Instruct-jailbreak-post-tar.json#L297), or [slightly too concise](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/f1f994b50bd0d4967da90e461ee7bb60c0a35902/results/harmless_test_Llama-3.1-8B-Instruct-jailbreak-post-tar.json#L1032).
 
 ### 💣 Example of outputs from a harmful input
@@ -180,26 +182,43 @@ pipenv shell
 
 ### ⚙️ Procedure
 
-1. Download open-weights models
+All configuration parameters and hyper-parameters are centrally managed in the `parameters.py` module.
+
+1. Download open-weights models (``unsloth/Llama-3.1-8B-Instruct`` and ``mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated``).
 
 ```sh
 download_models.py
 ```
 
-- ``unsloth/Llama-3.1-8B-Instruct-bnb-4bit``: Baseline model, used as a target for adversarial fine-tuning, and as a substrate for the TAR mechanism.
-- ``mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated``: Abliterated model, used to populate the training dataset with harmful answers.
+2. Download datasets (harmful: [wildjailbreak dataset](https://huggingface.co/datasets/allenai/wildjailbreak), harmless: [alpaca dataset](https://huggingface.co/datasets/tatsu-lab/alpaca)) and prepare the train and test splits (for each harmful and harmless category: 1200 samples for TAR training, 1200 samples for adversarial fine-tuning, and 200 samples for the held-out test set).
 
+```sh
+prepare_datasets.py
+```
 
-2. ``download_datasets``
-3. ``generate_splits``
-2. ``generate_datasets.py``
-3. ``generate_batch_synthetic_answers.py``
-4. ``trim_unfinished_sentences.py``
-5. ``adversarial_supervised_fine_tuning.py`` (target_model = `BASELINE`)
-6. ``analyze_features.py``
-7. ``train_tar.py``
-8. ``adversarial_supervised_fine_tuning.py`` (target_model = `TAR`)
-9. ``compare_models.py``
+3. Generate complete harmful answers for all the harmful samples using the abliterated model, to serve as a target during supervised aversarial fine-tuning.
+
+```sh
+generate_batch_synthetic_answers.py
+```
+
+4. Run the training routine for the TAR defense layer.
+
+```sh
+train_tar.py
+```
+
+5. Conduct the attack on both models (`target_model = BASELINE` and `target_model = TAR`) via supervised adversarial fine-tuning (1200 harmful and 1200 harmless samples, different than the ones used to train TAR).
+
+```sh
+adversarial_supervised_fine_tuning.py
+```
+
+6. Evaluate the models on the held-out test set (200 harmful and 200 harmless samples)
+
+```sh
+infer_test_set.py
+```
 
 ## Bibliography
 
