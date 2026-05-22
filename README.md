@@ -2,6 +2,8 @@
 
 This project was conducted as part of the [Technical AI Safety Project Sprint](https://bluedot.org/courses/technical-ai-safety-project) hosted by [BlueDot Impact](https://bluedot.org/).
 
+[Yes but how does it work? 💡](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/main/README.md#methods)
+
 ## What is Tamper Attack Resistance in one sentence?
 
 Tampering Attack Resistance (TAR) is a framework for embedding robust safeguards into open-weight LLMs that prevent the recovery of harmful capabilities despite sustained adversarial weight modification.
@@ -120,7 +122,7 @@ None.
 
 > Socrates, a renowned Athenian philosopher and citizen of ancient Greece, faced two trials in Athens during the Peloponnesian War (399 BCE). The reasons behind these trials were multifaceted. The Charges Against Him In his first trial, he was charged with impiety against the gods of the state religion, corrupting youth, and introducing new deities.
 
-## Yes but how does it work? 💡
+## <a id="methods"></a>Yes but how does it work? 💡
 
 ### Overall training strategy (`training_step`)
 
