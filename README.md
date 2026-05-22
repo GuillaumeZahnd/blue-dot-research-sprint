@@ -22,6 +22,17 @@ Figure 2 illustrates the general principle of TAR, where the protected model rem
 
 *Figure 2. Overview of the approach explored in this project.*
 
+## Context and motivation 🌱
+
+Open-weight models have become indispensable to the research community and a broad ecosystem of developers by lowering deployment barriers, enabling academic auditability, and accelerating distributed innovation. Yet, this openness introduces an asymmetric security risk: unlike closed-source models protected behind access-controlled APIs, open-weight deployment grants adversaries unrestricted access to the underlying parameter matrices. Recent empirical work confirms that post-hoc alignment safeguards—including RLHF, DPO, and state-of-the-art representation unlearning—are structurally fragile, often completely reverting after minimal fine-tuning updates on small, targeted datasets. Crucially, open-weight ecosystem dynamics operate under an irreversible ratchet; frontier capabilities trickle down from closed labs to open-source repositories within a predictable horizon, meaning once a model artifact is distributed or mirrored, its specific parameter state is entirely unrevocable, permanently stripping the developer of the ability to patch vulnerabilities or enforce downstream compliance.
+
+Tampering Attack Resistance (TAR) addresses this fundamental vulnerability by shifting the defensive paradigm from passive post-hoc alignment to proactive structural defense. Rather than layering safety constraints on top of an optimized base, TAR utilizes a bi-level meta-learning framework during pre-training or initial alignment. This approach explicitly models the optimization paths of potential adversaries, training the weight topology to resist subversion across extended training runs. By radically elevating the computational and data barrier, TAR bridges a critical gap in open-weight safety, transforming a trivial script-level exploit into a prohibitively highly resource-intensive engineering bottleneck, all while balancing the crucial trade-off of maintaining the model's capacity for benign downstream adaptation. TAR is, of course, one piece of a much larger AI safety puzzle (it sits alongside governance frameworks, alignment research, input-space defenses, and regulatory oversight) but it addresses what is arguably the most acute vulnerability unique to open-weight release.
+
+## Disclaimer ⚠️
+
+> [!CAUTION]
+> This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of the authors, and may be offensive or distressing. Proceed with discretion.
+
 ## Models 🤖
 
 |Model|Source|Purpose|
@@ -32,16 +43,13 @@ Figure 2 illustrates the general principle of TAR, where the protected model rem
 |**De-aligned**| Baseline + adversarial fine tuning |Demonstrate that adversarial fine-tuning  strips defenses from the unprotected baseline.|
 |**Resilient**|TAR + adversarial fine tuning|Demonstrate that TAR-anchoring prevents adversarial fine-tuning and retains baseline utility.|
 
-> [!CAUTION]
-> This repository contains adversarial prompts and sensitive text used solely to evaluate the safety boundaries of Large Language Models. Content is provided for academic and red-teaming purposes only, does not reflect the views of the authors, and may be offensive or distressing. Proceed with discretion.
-
-## Results
+## Results 📊
 
 All results from the held-out test set (200 harmful samples from the [wildjailbreak dataset](https://huggingface.co/datasets/allenai/wildjailbreak) and 200 harmless samples from the [alpaca dataset](https://huggingface.co/datasets/tatsu-lab/alpaca)) are available in the [`results`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/tree/master/results) folder.
 
 The [`demo_inference.ipynb`](https://github.com/GuillaumeZahnd/blue-dot-research-sprint/blob/master/demo_inference.ipynb) notebook provides a streamlined interface to run inference across any model variant using custom queries and system prompts.
 
-### Key takeaways
+### Key takeaways 🎯
 
 ||Baseline | Baseline + attack | TAR  + attack |
 |---|---|---|---|
@@ -112,7 +120,7 @@ None.
 
 > Socrates, a renowned Athenian philosopher and citizen of ancient Greece, faced two trials in Athens during the Peloponnesian War (399 BCE). The reasons behind these trials were multifaceted. The Charges Against Him In his first trial, he was charged with impiety against the gods of the state religion, corrupting youth, and introducing new deities.
 
-## Yes but how does it work?
+## Yes but how does it work? 💡
 
 ### Overall training strategy (`training_step`)
 
@@ -142,7 +150,7 @@ $$\displaystyle \mathcal{L}_{\text{retain}} = -\frac{1}{N} \sum_{i=1}^{N} \log P
 
 where $x$ is the prompt tokens, $y$ is the target tokens, and $N$ is the total number of non-masked target tokens.
 
-## HOWTO
+## HOWTO 🚀
 
 ### 📋 Pre-requisites
 
@@ -220,6 +228,6 @@ adversarial_supervised_fine_tuning.py
 infer_test_set.py
 ```
 
-## Bibliography
+## Bibliography 📖
 
 **Tamirisa R, Bharathi B, Phan L, Zhou A, Gatti A, Suresh T, Lin M, Wang J, Wang R, Arel R, Zou A (2025)**. [**"Tamper-resistant safeguards for open-weight LLMs."**](https://proceedings.iclr.cc/paper_files/paper/2025/hash/fc49a629d33bc2461ed7a715ce44da68-Abstract-Conference.html) International Conference on Learning Representations (ICLR).
