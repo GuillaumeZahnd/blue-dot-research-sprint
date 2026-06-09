@@ -1,3 +1,4 @@
+import os
 import gc
 import math
 import torch
@@ -8,9 +9,11 @@ from typing import List
 from unsloth import FastLanguageModel
 import unsloth
 import unsloth_zoo.loss_utils
-from transformers import TrainingArguments, Trainer
+from trl import SFTTrainer, SFTConfig
+from transformers import Trainer
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader
+from dotenv import load_dotenv
 
 from parameters import Parameters
 from source.utils import add_lora_adapters, get_tar_dataset, get_optimizer
@@ -53,9 +56,9 @@ class TARTrainer(Trainer):
         )
 
 
-    def get_batch_samples(self, epoch_iterator, num_batches, device):
+    def get_batch_samples(self, epoch_iterator, nb_batches, device):
         batches = []
-        for _ in range(num_batches):
+        for _ in range(nb_batches):
             try:
                 batches.append(next(epoch_iterator))
             except StopIteration:
@@ -556,6 +559,10 @@ class TARTrainer(Trainer):
 
 
 if __name__ == "__main__":
+
+    load_dotenv()
+    os.environ["WANDB_PROJECT"] = "TAR-safeguards-anchoring"
+
     output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR
     output_checkpoints_dir = Parameters.PATH_TO_CHECKPOINTS / f"TAR"
     output_checkpoints_dir.mkdir(parents=True, exist_ok=True)
@@ -584,7 +591,7 @@ if __name__ == "__main__":
         nb_samples_max=Parameters.NB_SAMPLES_TRAIN_TAR
     )
 
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         learning_rate=Parameters.LEARNING_RATE_TAR,
         lr_scheduler_type=Parameters.LR_SCHEDULER_TYPE_TAR,
         warmup_steps=Parameters.WARMUP_STEPS_TAR,
@@ -593,11 +600,12 @@ if __name__ == "__main__":
         per_device_train_batch_size=Parameters.BATCH_SIZE_TAR,
         gradient_accumulation_steps=Parameters.GRADIENT_ACCUMULATION_STEPS_TAR,
         max_steps=Parameters.NB_STEPS_TAR,
-        logging_steps=1,
         optim=Parameters.OPTIM_TAR,
         remove_unused_columns=False,
-        report_to=Parameters.REPORT_TO,
         gradient_checkpointing=False,
+        report_to=Parameters.REPORT_TO,
+        logging_strategy="steps",
+        logging_steps=1,
     )
 
     trainer = TARTrainer(
@@ -618,3 +626,4 @@ if __name__ == "__main__":
     tokenizer.save_pretrained(str(output_model_path))
 
     print(f"Model saved to: {output_model_path}")
+    wandb.finish()

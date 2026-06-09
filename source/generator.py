@@ -117,21 +117,20 @@ def generate_responses(
     decoded = tokenizer.batch_decode(outputs[:, prompt_len:], skip_special_tokens=True)
 
     return [text.strip() for text in decoded]
-    
-    
+
+
 def run_inference_on_dataset(
     path_to_model,
     input_file,
     output_file,
     prefill,
-    system_prompt,    
-    nb_samples_max,    
+    system_prompt,
+    nb_samples_max,
     repetition_penalty,
-    temperature,    
+    temperature,
     batch_size,
-    seed,    
-):    
-    
+    seed,
+):
 
     # Load existing results
     results = []
@@ -189,7 +188,7 @@ def run_inference_on_dataset(
                 min_new_tokens=Parameters.MIN_NEW_TOKENS,
                 max_seq_length=Parameters.MAX_SEQ_LENGTH,
                 temperature=temperature,
-                repetition_penalty=repetition_penalty,                
+                repetition_penalty=repetition_penalty,
             )
 
             for item, answer in zip(batch_items, batch_answers):
@@ -208,4 +207,4 @@ def run_inference_on_dataset(
             print(f"\nError processing batch at index {batch_id}: {e}")
             continue
 
-    print(f"\nProcessing complete. Total samples now in file: {len(results)}")    
+    print(f"\nProcessing complete. Total samples now in file: {len(results)}")

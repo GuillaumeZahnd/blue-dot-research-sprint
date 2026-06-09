@@ -1,9 +1,10 @@
-from unsloth import FastLanguageModel
+import os
 import torch
-from trl import SFTTrainer
-from transformers import TrainingArguments
+from unsloth import FastLanguageModel
+from trl import SFTTrainer, SFTConfig
 from pathlib import Path
 from peft import PeftModel
+from dotenv import load_dotenv
 
 from parameters import Parameters
 from source.utils import add_lora_adapters, setup_dataset
@@ -16,8 +17,11 @@ if __name__ == "__main__":
     # Indicate which model shall be attacked:
     # - Select "BASELINE" to generate the "pre-tar" model (it is expected that this model will be jailbroken)
     # - Select "TAR" to generate the "post-tar" model (it is expected that this model will be resilient)
-    target_model = "BASELINE"
+    target_model = "TAR"
     # ----------------------------------------------------------------
+
+    load_dotenv()
+    os.environ["WANDB_PROJECT"] = "TAR-adversarial-supervised-fine-tuning"
 
     # Load base model
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -58,7 +62,7 @@ if __name__ == "__main__":
         seed=Parameters.SEED
     )
 
-    training_arguments = TrainingArguments(
+    training_arguments = SFTConfig(
         per_device_train_batch_size=Parameters.BATCH_SIZE_AFT,
         gradient_accumulation_steps=Parameters.GRADIENT_ACCUMULATION_STEPS_AFT,
         warmup_steps=Parameters.WARMUP_STEPS_AFT,
@@ -68,12 +72,16 @@ if __name__ == "__main__":
         weight_decay=Parameters.WEIGHT_DECAY_AFT,
         lr_scheduler_type=Parameters.LR_SCHEDULER_TYPE_AFT,
         seed=Parameters.SEED,
-        report_to=Parameters.REPORT_TO,
         output_dir=output_checkpoints_path,
         max_grad_norm=Parameters.MAX_GRAD_NORM_AFT,
         gradient_checkpointing=True,
         fp16=not torch.cuda.is_bf16_supported(),
         bf16=torch.cuda.is_bf16_supported(),
+        dataset_text_field="text",
+        max_seq_length=Parameters.MAX_SEQ_LENGTH,
+        dataset_num_proc=2,
+        report_to=Parameters.REPORT_TO,
+        logging_strategy="steps",
         logging_steps=1,
     )
 
@@ -81,10 +89,7 @@ if __name__ == "__main__":
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=Parameters.MAX_SEQ_LENGTH,
-        dataset_num_proc=2,
-        args=training_arguments
+        args=training_arguments,
     )
 
     trainer.train()
@@ -94,3 +99,4 @@ if __name__ == "__main__":
     tokenizer.save_pretrained(output_model_path)
 
     print(f"Model saved to: {output_model_path}")
+    wandb.finish()

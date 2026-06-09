@@ -7,7 +7,7 @@ class Parameters:
     # MODELS
     PATH_TO_MODELS = Path("models")
 
-    MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct"    
+    MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct"
     MODEL_NAME_ABLITERATED = "Meta-Llama-3.1-8B-Instruct-abliterated"
     MODEL_NAME_JAILBREAK_PRE_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-pre-tar"
     MODEL_NAME_JAILBREAK_POST_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-post-tar"
@@ -23,14 +23,14 @@ class Parameters:
     PATH_TO_DATASETS_DOWNLOADS = PATH_TO_DATASETS / "downloaded"
     PATH_TO_DATASETS_SPLITS = PATH_TO_DATASETS / "splits"
     PATH_TO_DATASETS_LABELS = PATH_TO_DATASETS / "splits_with_labels"
-    PATH_TO_DATASETS_TEST = PATH_TO_DATASETS / "test_results"    
+    PATH_TO_DATASETS_TEST = PATH_TO_DATASETS / "test_results"
 
     # LOGS AND RESULTS
     PATH_TO_LOGS = Path("logs")
-    PATH_TO_RESULTS = Path("results")    
+    PATH_TO_RESULTS = Path("results")
 
     # MISC
-    LORA_RANK = 16    
+    LORA_RANK = 16
     SEED = 3407
     DTYPE = torch.bfloat16
     MAX_SEQ_LENGTH = 1024
@@ -42,7 +42,7 @@ class Parameters:
     NB_SAMPLES_TRAIN_TAR = 1200
     NB_SAMPLES_TRAIN_ADVERSARIAL = 1200
     NB_SAMPLES_TEST = 200
-    REPORT_TO = "none"  # TODO Plug wandb
+    REPORT_TO = "wandb"
     BATCH_SIZE_GENERATION = 8
     REPETITION_PENALTY = 1.1
 
@@ -71,12 +71,12 @@ class Parameters:
     OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
     LR_SCHEDULER_TYPE_TAR = "cosine"
     MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
-    MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient    
+    MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
     MAX_INNER_GRAD_NORM_TAR = 2.0
     ALPHA_TAR = 0.0  # Cancel stability loss
     BETA_TAR = 3.0
     TAMPERING_THRESHOLD_TAR = 2.0
-    PROBABILITY_SYSTEM_PROMPT_TAR = 0.5   
+    PROBABILITY_SYSTEM_PROMPT_TAR = 0.5
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
     # REPETITION_PENALTY_TAR = 1.3  # TODO
 

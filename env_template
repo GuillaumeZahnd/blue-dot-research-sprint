@@ -1,1 +1,4 @@
 HF_TOKEN=<add your Hugging Face token here>
+WANDB_API_KEY=<add your wandb API key here>
+WANDB_PROJECT=<add your wandb project name here>
+WANDB_ENTITY=<add your wandb username here>

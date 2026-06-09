@@ -1,4 +1,4 @@
-# Tamper Attack Resistance 🛡️
+# Safety-by-design in open-weight LLMs via Tamper Attack Resistance (TAR) 🛡️
 
 This project was conducted as part of the [Technical AI Safety Project Sprint](https://bluedot.org/courses/technical-ai-safety-project) hosted by [BlueDot Impact](https://bluedot.org/).
 
@@ -208,9 +208,9 @@ where $\alpha$ is the stability scaling hyperparameter, $M$ is the total number 
 
 ### 🛠️ Installation & Setup
 
-**1. Hugging Face token:**
+**1. Authentication tokens and API keys:**
 
-Edit the file `env_template` to add your Hugging Face token, and rename this file to `.env`.
+Edit the file `env_template` to add your Hugging Face token and your wandb API key, and rename this file to `.env`.
 
 **2. Install pipx (if not already installed):**
 
