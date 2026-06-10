@@ -327,7 +327,6 @@ class TARTrainer(Trainer):
         self,
         model: torch.nn.Module,
         attack_batch: dict[str, torch.Tensor],
-        backup_weights: dict[str, torch.Tensor],
         trajectory_snapshots: list[dict[str, torch.Tensor]],
         micro_batch_size: int
     ) -> tuple[dict[str, torch.Tensor], float]:
@@ -337,12 +336,11 @@ class TARTrainer(Trainer):
         Args:
             model: Language model to optimize
             attack_batch: Dictionary containing evaluation inputs, attention masks, and labels.
-            backup_weights: Dictionary of baseline model state weights.
             trajectory_snapshots: List of model state dictionaries sampled during training.
             micro_batch_size: Step size for batch chunking to avoid memory exhaustion.
 
         Returns:
-            Dict mapping parameter names to averaged accumulated meta-gradients.
+            Dictionary mapping parameter names to averaged accumulated meta-gradients.
             Average normalized entropy value across all snapshots.
         """
         torch.set_grad_enabled(True)
@@ -413,7 +411,12 @@ class TARTrainer(Trainer):
         return accumulated_gradients, avg_entropy
 
 
-    def _restore_model(self, model, backup_weights) -> None:
+    def _restore_model(self, model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]) -> None:
+        """
+        Args:
+            model: Language model to restore.
+            backup_weights: Dictionary of baseline model state weights.
+        """    
         with torch.no_grad():
             for n, p in model.named_parameters():
                 if p.requires_grad:
@@ -442,7 +445,7 @@ class TARTrainer(Trainer):
         return harmful_mask
 
 
-    def _compute_meta_distance(self, model, backup_weights):
+    def _compute_meta_distance(self, model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]):
         """Compute the L2 distance between current model parameters and backed-up weights."""
         with torch.no_grad():
             dist_list = [(p - backup_weights[n]).norm(2) for n, p in model.named_parameters() if p.requires_grad]
@@ -493,10 +496,9 @@ class TARTrainer(Trainer):
             # Adversarial attack
             model.zero_grad()  # Must precede the call to "_compute_meta_gradients"
             saved_meta_grads, loss_tr_value = self._compute_meta_gradients(
-                model,
-                attack_batch,
-                backup_weights,
-                trajectory_snapshots,
+                model=model,
+                attack_batch=attack_batch,
+                trajectory_snapshots=trajectory_snapshots,
                 micro_batch_size=Parameters.MICRO_BATCH_SIZE_TAR
             )
 
