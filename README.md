@@ -187,7 +187,7 @@ The stability loss acts as a regularizer that prevents representation collapse. 
 
 $$\displaystyle \mathcal{L}_{\text{stability}} = \alpha \cdot \frac{1}{M} \sum_{k=1}^{M} (w_k - w_{k, 0})^2,$$
 
-where $$\alpha$$ is the stability scaling hyperparameter, $$M$$ is the total number of individual elements across all trainable LoRA parameters, $$w_k \in \mathcal{W}_t$$ represents the current weight parameters, and $$w_{k, 0} \in \mathcal{W}_0$$ represents the initial baseline parameters.
+where $\alpha$ is the stability scaling hyperparameter, $M$ is the total number of individual elements across all trainable LoRA parameters, $w_k \in \mathcal{W}\_t$ represents the current weight parameters, and $w_{k,0} \in \mathcal{W}\_0$ represents the initial baseline parameters.
 
 ## <a id="limitations"></a>Current limitations and future perspectives 📌
 
