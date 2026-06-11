@@ -183,11 +183,11 @@ evaluated over the entire vocabulary space $\mathcal{V}$ for each valid token po
 
 ## Stability loss (`_compute_stability_gradients`)
 
-The stability loss acts as a regularizer that prevents representation collapse. It anchors the model's active adapter weights to their pre-training configuration, safeguarding the base model's general capabilities during the optimization process. The loss computes the element-wise squared difference between the moving adapter weights $\mathcal{W}_t$ and their original starting configuration $\mathcal{W}_0$. This creates a restoration force that scales proportionally with the distance of the drift:
+The stability loss acts as a regularizer that prevents representation collapse. It anchors the model's active adapter weights to their pre-training configuration, safeguarding the base model's general capabilities during the optimization process. The loss computes the element-wise squared difference between the moving adapter weights $$\mathcal{W}_t$$ and their original starting configuration $$\mathcal{W}_0$$. This creates a restoration force that scales proportionally with the distance of the drift:
 
 $$\displaystyle \mathcal{L}_{\text{stability}} = \alpha \cdot \frac{1}{M} \sum_{k=1}^{M} (w_k - w_{k, 0})^2,$$
 
-where $\alpha$ is the stability scaling hyperparameter, $M$ is the total number of individual elements across all trainable LoRA parameters, $w_k \in \mathcal{W}_t$ represents the current weight parameters, and $w_{k, 0} \in \mathcal{W}_0$ represents the initial baseline parameters.
+where $\alpha$ is the stability scaling hyperparameter, $M$ is the total number of individual elements across all trainable LoRA parameters, $w_k \in \mathcal{W}\_t$ represents the current weight parameters, and $w_{k,0} \in \mathcal{W}\_0$ represents the initial baseline parameters.
 
 ## <a id="limitations"></a>Current limitations and future perspectives 📌
 

@@ -58,13 +58,13 @@ class Parameters:
     MAX_GRAD_NORM_AFT = 1.0
 
     # TAMPER ATTACK RESISTANCE (TAR)
+    NB_STEPS_TAR = 80
+    WARMUP_STEPS_TAR = 10
     BATCH_SIZE_TAR = 12
     MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
     LEARNING_RATE_TAR = 5e-5
     LEARNING_RATE_INNER_TAR = 5e-2
-    WARMUP_STEPS_TAR = 10
-    NB_STEPS_TAR = 100
     NB_INNER_STEPS_MIN_TAR = 10
     NB_INNER_STEPS_MAX_TAR = 50
     OPTIM_TAR = "adamw_torch"
