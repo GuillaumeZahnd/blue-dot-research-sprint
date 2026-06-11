@@ -99,4 +99,3 @@ if __name__ == "__main__":
     tokenizer.save_pretrained(output_model_path)
 
     print(f"Model saved to: {output_model_path}")
-    wandb.finish()
