@@ -99,7 +99,7 @@ class TARTrainer(Trainer):
         penalizing the distance between current LoRA weights and initialization.
         We use mean() instead of sum() for loss_stability_value because it is for logging only (not for training weights)
         """
-        saved_stability_grads = {}
+        saved_stability_gradients = {}
 
         lora_params = [(n, p) for n, p in model.named_parameters() if "lora" in n.lower() and p.requires_grad]
 
@@ -120,7 +120,7 @@ class TARTrainer(Trainer):
                         grad_dir = diff_w / dist
                     else:
                         grad_dir = torch.zeros_like(diff_w)
-                    saved_stability_grads[n] = self.alpha * grad_dir
+                    saved_stability_gradients[n] = self.alpha * grad_dir
                 loss_stability_value = torch.stack(norms).mean().item()
 
         elif norm_strategy == "SQUARED":
@@ -129,10 +129,10 @@ class TARTrainer(Trainer):
             with torch.no_grad():
                 for n, p in lora_params:
                     diff_w = p - self.lora_init_weights[n].to(device)
-                    saved_stability_grads[n] = self.alpha * 2.0 * diff_w
+                    saved_stability_gradients[n] = self.alpha * 2.0 * diff_w
                     loss_stability_value += (diff_w ** 2).mean().item()
 
-        return saved_stability_grads, loss_stability_value
+        return saved_stability_gradients, loss_stability_value
 
 
     def _compute_drift_only(self, model, device):
@@ -252,7 +252,7 @@ class TARTrainer(Trainer):
 
         # [Harmless sub-batch] Representation anchoring, MSE loss between reference and current model final activations
         reference_harmless_hidden_states = compute_reference_hidden_states(
-            model, sorted_input_ids[:half_batch_size], sorted_attention_mask[:half_batch_size], detach=True
+            model, sorted_input_ids[:half_batch_size], sorted_attention_mask[:half_batch_size]
         )
 
         active_harmless_hidden_states = capture_hidden_states(
@@ -304,7 +304,7 @@ class TARTrainer(Trainer):
                 labels=attack_batch["attack_labels"]
             )
             inner_loss = outputs.loss
-            
+
             # Capture start loss
             if inner_step == 0:
                 loss_inner_loop_start = inner_loss.item()
@@ -359,7 +359,7 @@ class TARTrainer(Trainer):
         }
 
 
-    def _apply_coalesced_gradients(self, model, retain_grads, meta_grads, stab_grads):
+    def _apply_coalesced_gradients(self, model, retain_gradients, meta_gradients, stab_gradients):
         """Coalesce gradient components and apply them to the model parameters"""
         total_norm = torch.tensor(0.0)
         clip_scale = 1.0
@@ -367,11 +367,9 @@ class TARTrainer(Trainer):
         with torch.no_grad():
 
             # Per-component clip on meta gradients only — prevents overwhelming retain
-            if meta_grads:
-                meta_grad_list = list(meta_grads.values())
-                total_norm = torch.linalg.vector_norm(
-                    torch.stack([g.norm() for g in meta_grad_list])
-                )
+            if meta_gradients:
+                meta_grad_list = list(meta_gradients.values())
+                total_norm = torch.linalg.vector_norm(torch.stack([g.norm() for g in meta_grad_list]))
                 clip_scale = min(1.0, Parameters.MAX_GRAD_NORM_META_TAR / (total_norm + 1e-8))
 
             # Coalesce
@@ -379,13 +377,12 @@ class TARTrainer(Trainer):
                 if not p.requires_grad:
                     continue
                 p.grad = torch.zeros_like(p.data) if p.grad is None else p.grad.zero_()
-                if n in retain_grads:
-                    p.grad.add_(retain_grads[n].to(p.grad.device, dtype=p.grad.dtype))
-                if n in meta_grads:
-                    p.grad.add_(meta_grads[n].to(p.grad.device, dtype=p.grad.dtype),
-                                alpha=(self.beta * clip_scale))
-                if n in stab_grads:
-                    p.grad.add_(stab_grads[n].to(p.grad.device, dtype=p.grad.dtype))
+                if n in retain_gradients:
+                    p.grad.add_(retain_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
+                if n in meta_gradients:
+                    p.grad.add_(meta_gradients[n].to(p.grad.device, dtype=p.grad.dtype), alpha=(self.beta * clip_scale))
+                if n in stab_gradients:
+                    p.grad.add_(stab_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
 
             # Unified clip on the full coalesced gradient
             total_norm = torch.nn.utils.clip_grad_norm_(
@@ -551,8 +548,8 @@ class TARTrainer(Trainer):
         loss_inner_loop_start = 0.0
         loss_inner_loop_end = 0.0
         meta_distance = 0.0  # Added to prevent NameError in the else path
-        saved_meta_grads = {}
-        saved_stability_grads = {}
+        saved_meta_gradients = {}
+        saved_stability_gradients = {}
 
         # The CustomBatchSampler ensures that each batch always contains 50% harmless and 50% harmful samples
         if harmful_mask.any():
@@ -568,7 +565,7 @@ class TARTrainer(Trainer):
 
             # Adversarial attack
             model.zero_grad()  # Must precede the call to "_compute_meta_gradients"
-            saved_meta_grads, loss_tr_value = self._compute_meta_gradients(
+            saved_meta_gradients, loss_tr_value = self._compute_meta_gradients(
                 model=model,
                 attack_batch=attack_batch,
                 trajectory_snapshots=trajectory_snapshots,
@@ -581,19 +578,19 @@ class TARTrainer(Trainer):
 
             # Stability loss
             if self.alpha > 0.0:
-                saved_stability_grads, loss_stability_value = self._compute_stability_gradients(model, device)
+                saved_stability_gradients, loss_stability_value = self._compute_stability_gradients(model, device)
             else:
-                saved_stability_grads = {}
+                saved_stability_gradients = {}
                 loss_stability_value = self._compute_drift_only(model, device)
 
             total_norm, clip_scale = self._apply_coalesced_gradients(
                 model=model,
-                retain_grads=saved_retain_gradients,
-                meta_grads=saved_meta_grads,
-                stab_grads=saved_stability_grads,
+                retain_gradients=saved_retain_gradients,
+                meta_gradients=saved_meta_gradients,
+                stab_gradients=saved_stability_gradients,
             )
 
-            del backup_weights, saved_retain_gradients, saved_meta_grads, saved_stability_grads, trajectory_snapshots
+            del backup_weights, saved_retain_gradients, saved_meta_gradients, saved_stability_gradients, trajectory_snapshots
             gc.collect()
             torch.cuda.empty_cache()
 
