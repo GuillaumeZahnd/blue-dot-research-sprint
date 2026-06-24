@@ -73,8 +73,8 @@ class Parameters:
     MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
     MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
     MAX_INNER_GRAD_NORM_TAR = 2.0
-    ALPHA_TAR = 0.0  # Cancel stability loss
-    BETA_TAR = 3.0
+    ALPHA_TAR = 0.1
+    BETA_TAR = 1.0
     TAMPERING_THRESHOLD_TAR = 2.0
     PROBABILITY_SYSTEM_PROMPT_TAR = 0.5
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
