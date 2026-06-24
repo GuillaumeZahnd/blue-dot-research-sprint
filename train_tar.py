@@ -46,6 +46,7 @@ class TARTrainer(Trainer):
         self.alpha = alpha
         self.beta = beta
         self.lora_init_weights = None
+        self.r_adv = getattr(Parameters, "RANK_ADVERSARY", 8)  # Subspace isolation
 
         trainable_parameters = [p for p in self.model.parameters() if p.requires_grad]
 
@@ -108,29 +109,49 @@ class TARTrainer(Trainer):
 
         norm_strategy = "SQUARED"
 
+        # Constant-magnitude gradient (Sum of un-squared L2 norms)
         if norm_strategy == "UNSQUARED":
             norms = []
-            # Constant-magnitude gradient (Sum of un-squared L2 norms)
             with torch.no_grad():
                 for n, p in lora_params:
                     diff_w = p - self.lora_init_weights[n].to(device)
+
+                    # Subspace isolation
+                    if "lora_A" in n:
+                        diff_w[:self.r_adv, :] = 0.0  # Freeze adversary rows
+                    elif "lora_B" in n:
+                        diff_w[:, :self.r_adv] = 0.0  # Freeze adversary columns
+
                     dist = torch.norm(diff_w, p=2)
                     norms.append(dist)
+
                     if dist > 1e-8:
                         grad_dir = diff_w / dist
                     else:
                         grad_dir = torch.zeros_like(diff_w)
+
                     saved_stability_gradients[n] = self.alpha * grad_dir
                 loss_stability_value = torch.stack(norms).mean().item()
 
+        # Proportional to drift (Sum of squared L2 norms)
         elif norm_strategy == "SQUARED":
-            # Proportional to drift (Sum of squared L2 norms)
             loss_stability_value = 0.0
             with torch.no_grad():
                 for n, p in lora_params:
                     diff_w = p - self.lora_init_weights[n].to(device)
+
+                    # Subspace isolation
+                    if "lora_A" in n:
+                        diff_w[:self.r_adv, :] = 0.0
+                        active_elements = diff_w[self.r_adv:, :]  # Freeze adversary rows
+                    elif "lora_B" in n:
+                        diff_w[:, :self.r_adv] = 0.0
+                        active_elements = diff_w[:, self.r_adv:]  # Freeze adversary columns
+                    else:
+                        active_elements = diff_w
+
                     saved_stability_gradients[n] = self.alpha * 2.0 * diff_w
-                    loss_stability_value += (diff_w ** 2).mean().item()
+                    loss_stability_value += (active_elements ** 2).mean().item()
 
         return saved_stability_gradients, loss_stability_value
 
@@ -145,7 +166,17 @@ class TARTrainer(Trainer):
             for n, p in model.named_parameters():
                 if "lora" in n.lower() and p.requires_grad:
                     diff_w = p - self.lora_init_weights[n].to(device)
-                    loss_stability_value += (diff_w ** 2).mean().item()
+
+                    # Subspace isolation
+                    if "lora_A" in n:
+                        active_elements = diff_w[self.r_adv:, :]  # Freeze adversary rows
+                    elif "lora_B" in n:
+                        active_elements = diff_w[:, self.r_adv:]  # Freeze adversary columns
+                    else:
+                        active_elements = diff_w
+
+                    loss_stability_value += (active_elements ** 2).mean().item()
+
         return loss_stability_value
 
 
@@ -310,6 +341,17 @@ class TARTrainer(Trainer):
                 loss_inner_loop_start = inner_loss.item()
 
             self.accelerator.backward(inner_loss)
+
+            # Subspace isolation
+            with torch.no_grad():
+                for n, p in model.named_parameters():
+                    if p.requires_grad and p.grad is not None and "lora" in n.lower():
+                        if "lora_A" in n:
+                            p.grad[self.r_adv:, :] = 0.0  # Freeze defender rows
+                        elif "lora_B" in n:
+                            p.grad[:, self.r_adv:] = 0.0  # Freeze defender columns
+
+
             torch.nn.utils.clip_grad_norm_(trainable_parameters, Parameters.MAX_INNER_GRAD_NORM_TAR)
             self.inner_optimizer.step()
 
@@ -377,6 +419,7 @@ class TARTrainer(Trainer):
                 if not p.requires_grad:
                     continue
                 p.grad = torch.zeros_like(p.data) if p.grad is None else p.grad.zero_()
+
                 if n in retain_gradients:
                     p.grad.add_(retain_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
                 if n in meta_gradients:
@@ -384,10 +427,15 @@ class TARTrainer(Trainer):
                 if n in stab_gradients:
                     p.grad.add_(stab_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
 
+                # Subspace isolation
+                if "lora" in n.lower():
+                    if "lora_A" in n:
+                        p.grad[:self.r_adv, :] = 0.0  # Freeze adversary rows
+                    elif "lora_B" in n:
+                        p.grad[:, :self.r_adv] = 0.0  # Freeze adversary columns
+
             # Unified clip on the full coalesced gradient
-            total_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), Parameters.MAX_GRAD_NORM_TAR
-            )
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), Parameters.MAX_GRAD_NORM_TAR)
 
         # Returned values are for debug only
         return total_norm, clip_scale

@@ -30,7 +30,8 @@ class Parameters:
     PATH_TO_RESULTS = Path("results")
 
     # MISC
-    LORA_RANK = 16
+    LORA_RANK = 32
+    RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
     SEED = 3407
     DTYPE = torch.bfloat16
     MAX_SEQ_LENGTH = 1024
