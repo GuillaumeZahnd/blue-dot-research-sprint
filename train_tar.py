@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader
 from dotenv import load_dotenv
 
 from parameters import Parameters
-from source.utils import add_lora_adapters, get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, probe_subspace_gradient_norms
+from source.utils import add_lora_adapters, get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states
+from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
 from source.custom_tokenize_fn import get_tokenize_fn
@@ -351,7 +352,7 @@ class TARTrainer(Trainer):
                         elif "lora_B" in n:
                             p.grad[:, self.r_adv:] = 0.0  # Freeze defender columns
 
-            # (inner): probe immediately after masking, last step only
+            # (probe, inner): probe immediately after masking, last step only
             if inner_step == nb_inner_steps - 1:
                 outer_step = getattr(self.state, "global_step", 0)
                 probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
@@ -438,7 +439,7 @@ class TARTrainer(Trainer):
                     elif "lora_B" in n:
                         p.grad[:, :self.r_adv] = 0.0  # Freeze adversary columns
 
-            # (outer): probe immediately after masking
+            # (probe, outer): probe immediately after masking
             outer_step = getattr(self.state, "global_step", 0)
             probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="outer", step=outer_step)
 
@@ -619,6 +620,10 @@ class TARTrainer(Trainer):
             loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots = self._inner_loop_attack(
                 model, attack_batch, nb_inner_steps)
 
+            # (probe, post-inner): model is in attacked state
+            outer_step = getattr(self.state, "global_step", 0)
+            probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step)
+
             # Adversarial attack
             model.zero_grad()  # Must precede the call to "_compute_meta_gradients"
             saved_meta_gradients, loss_tr_value = self._compute_meta_gradients(
@@ -631,6 +636,10 @@ class TARTrainer(Trainer):
             # (For logging only) Distance between the attacked model and the initial weights -- Placed before "_restore_model"
             meta_distance = self._compute_meta_distance(model, backup_weights)
             self._restore_model(model, backup_weights)
+
+            # (probe, post-restore): model is in outer-loop-accumulated state
+            outer_step = getattr(self.state, "global_step", 0)
+            probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step)
 
             # Stability loss
             if self.alpha > 0.0:

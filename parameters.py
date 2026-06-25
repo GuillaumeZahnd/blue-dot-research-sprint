@@ -66,7 +66,7 @@ class Parameters:
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
     LEARNING_RATE_TAR = 5e-5
     LEARNING_RATE_INNER_TAR = 5e-2
-    NB_INNER_STEPS_MIN_TAR = 10
+    NB_INNER_STEPS_MIN_TAR = 30
     NB_INNER_STEPS_MAX_TAR = 50
     OPTIM_TAR = "adamw_torch"
     OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
@@ -74,8 +74,8 @@ class Parameters:
     MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
     MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
     MAX_INNER_GRAD_NORM_TAR = 2.0
-    ALPHA_TAR = 0.1
-    BETA_TAR = 1.0
+    ALPHA_TAR = 0.1  # TODO try 0.5
+    BETA_TAR = 1.0  # TODO try 2.0
     TAMPERING_THRESHOLD_TAR = 2.0
     PROBABILITY_SYSTEM_PROMPT_TAR = 0.5
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
