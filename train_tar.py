@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from dotenv import load_dotenv
 
 from parameters import Parameters
-from source.utils import add_lora_adapters, get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states
+from source.utils import add_lora_adapters, get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, probe_subspace_gradient_norms
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
 from source.custom_tokenize_fn import get_tokenize_fn
@@ -351,6 +351,10 @@ class TARTrainer(Trainer):
                         elif "lora_B" in n:
                             p.grad[:, self.r_adv:] = 0.0  # Freeze defender columns
 
+            # (inner): probe immediately after masking, last step only
+            if inner_step == nb_inner_steps - 1:
+                outer_step = getattr(self.state, "global_step", 0)
+                probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
 
             torch.nn.utils.clip_grad_norm_(trainable_parameters, Parameters.MAX_INNER_GRAD_NORM_TAR)
             self.inner_optimizer.step()
@@ -433,6 +437,10 @@ class TARTrainer(Trainer):
                         p.grad[:self.r_adv, :] = 0.0  # Freeze adversary rows
                     elif "lora_B" in n:
                         p.grad[:, :self.r_adv] = 0.0  # Freeze adversary columns
+
+            # (outer): probe immediately after masking
+            outer_step = getattr(self.state, "global_step", 0)
+            probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="outer", step=outer_step)
 
             # Unified clip on the full coalesced gradient
             total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), Parameters.MAX_GRAD_NORM_TAR)

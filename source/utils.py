@@ -6,10 +6,72 @@ from pathlib import Path
 from datasets import Dataset, load_dataset, concatenate_datasets
 from dotenv import load_dotenv
 from huggingface_hub import login
+from tqdm import tqdm
+import wandb
 
 from templates import Templates
 from source.generator import format_prompts
 from source.custom_tokenize_fn import get_tokenize_fn
+
+
+def probe_subspace_gradient_norms(model, r_adv: int, stage: str, step: int):
+    """
+    Log the degree of geometric enforcement related to subspace isolation.
+
+    At stage="inner": adversary rows/cols should have non-zero gradient, defender rows/cols should be ~0 (just been zeroed).
+    At stage="outer": adversary rows/cols should be ~0 (just been zeroed), defender rows/cols should have non-zero gradient.
+    """
+    adv_norm_total = 0.0
+    def_norm_total = 0.0
+    nb_layers = 0
+
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if not (p.requires_grad and p.grad is not None and "lora" in n.lower()):
+                continue
+            if "lora_A" in n:
+                adv_slice = p.grad[:r_adv, :]
+                def_slice = p.grad[r_adv:, :]
+            elif "lora_B" in n:
+                adv_slice = p.grad[:, :r_adv]
+                def_slice = p.grad[:, r_adv:]
+            else:
+                continue
+
+            adv_norm_total += adv_slice.norm().item()
+            def_norm_total += def_slice.norm().item()
+            nb_layers += 1
+
+    if nb_layers == 0:
+        return  # No LoRA gradients found
+
+    adv_norm_mean = adv_norm_total / nb_layers
+    def_norm_mean = def_norm_total / nb_layers
+
+    # Leakage ratio: how much of the "should-be-zero" subspace is non-zero
+    # Ideal values: 0.0 (perfect isolation). Anything > ~1e-4 warrants attention.
+    if stage == "inner":
+        leakage = def_norm_mean / (adv_norm_mean + 1e-8)
+        label = "inner_loop_defender_leakage"
+    else:  # outer
+        leakage = adv_norm_mean / (def_norm_mean + 1e-8)
+        label = "outer_loop_adversary_leakage"
+
+    tqdm.write(
+        f"\u001b[36m[subspace/{stage}] "
+        f"adv_gradient={adv_norm_mean:.6f} | "
+        f"def_gradient={def_norm_mean:.6f} | "
+        f"leakage={leakage:.6f}"
+        f"\u001b[0m"
+    )
+
+    if wandb.run is not None:
+        wandb.log({
+            f"subspace/{stage}/adv_gradient_norm": adv_norm_mean,
+            f"subspace/{stage}/def_gradient_norm": def_norm_mean,
+            f"subspace/{stage}/leakage_ratio": leakage,
+            f"subspace/{stage}/{label}": leakage,
+        }, step=step)
 
 
 def get_last_transformer_layer(model: torch.nn.Module) -> torch.nn.Module:
