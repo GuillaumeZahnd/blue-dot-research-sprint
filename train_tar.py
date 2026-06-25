@@ -21,6 +21,7 @@ from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
 from source.custom_tokenize_fn import get_tokenize_fn
+import wandb
 
 
 class TARTrainer(Trainer):
@@ -51,12 +52,19 @@ class TARTrainer(Trainer):
 
         trainable_parameters = [p for p in self.model.parameters() if p.requires_grad]
 
-        self.inner_optimizer = get_optimizer(
+        self.inner_optimizer_sgd = get_optimizer(
+            optimizer_name="SGD",
             trainable_parameters=trainable_parameters,
-            optimizer_name=Parameters.OPTIM_INNER_TAR,
-            learning_rate=Parameters.LEARNING_RATE_INNER_TAR
+            learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
+            momentum=Parameters.INNER_MOMENTUM_TAR
         )
 
+        self.inner_optimizer_adamw = get_optimizer(
+            optimizer_name="ADAMW",
+            trainable_parameters=trainable_parameters,
+            learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
+            momentum=None
+        )
 
     def get_batch_samples(self, epoch_iterator, nb_batches, device):
         batches = []
@@ -321,9 +329,33 @@ class TARTrainer(Trainer):
         return saved_retain_gradients, dummy_loss_tensor, total_loss_value
 
 
-    def _inner_loop_attack(self, model, attack_batch, nb_inner_steps: int):
+    def _inner_loop_attack(self, model, attack_batch):
         trainable_parameters = [p for p in model.parameters() if p.requires_grad]
-        self.inner_optimizer.state.clear()
+
+        if not Parameters.VARIABLE_ADVERSARY:
+            if Parameters.OPTIM_INNER_TAR == "SGD":
+               inner_optimizer = self.inner_optimizer_sgd
+            if Parameters.OPTIM_INNER_TAR == "ADAMW":
+               inner_optimizer = self.inner_optimizer_adamw
+            nb_inner_steps = Parameters.NB_INNER_STEPS_TAR
+
+        else:
+            inner_optimizer_flavor = random.choice(Parameters.OPTIM_INNER_TAR_CHOICES)
+            if inner_optimizer_flavor == "SGD":
+               inner_optimizer = self.inner_optimizer_sgd
+            if inner_optimizer_flavor == "ADAMW":
+               inner_optimizer = self.inner_optimizer_adamw
+
+            lr = random.uniform(Parameters.LEARNING_RATE_INNER_TAR_RANGE[0], Parameters.LEARNING_RATE_INNER_TAR_RANGE[1])
+            momentum = random.uniform(Parameters.INNER_MOMENTUM_TAR_RANGE[0], Parameters.INNER_MOMENTUM_TAR_RANGE[1])
+            for param_group in inner_optimizer.param_groups:
+                param_group["lr"] = lr
+                if "momentum" in param_group:
+                    param_group["momentum"] = momentum
+            nb_inner_steps = random.randint(Parameters.NB_INNER_STEPS_MIN_TAR, Parameters.NB_INNER_STEPS_MAX_TAR)
+
+        inner_optimizer.state.clear()
+
         loss_inner_loop_start = None
         loss_inner_loop_end = None
         trajectory_snapshots = []
@@ -358,7 +390,7 @@ class TARTrainer(Trainer):
                 probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
 
             torch.nn.utils.clip_grad_norm_(trainable_parameters, Parameters.MAX_INNER_GRAD_NORM_TAR)
-            self.inner_optimizer.step()
+            inner_optimizer.step()
 
             # Capture end loss on the final step
             if inner_step == nb_inner_steps - 1:
@@ -616,9 +648,7 @@ class TARTrainer(Trainer):
             backup_weights = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
 
             # Inner loop attack
-            nb_inner_steps = random.randint(Parameters.NB_INNER_STEPS_MIN_TAR, Parameters.NB_INNER_STEPS_MAX_TAR)
-            loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots = self._inner_loop_attack(
-                model, attack_batch, nb_inner_steps)
+            loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots = self._inner_loop_attack(model, attack_batch)
 
             # (probe, post-inner): model is in attacked state
             outer_step = getattr(self.state, "global_step", 0)
@@ -700,6 +730,20 @@ if __name__ == "__main__":
     load_dotenv()
     os.environ["WANDB_PROJECT"] = "TAR-safeguards-anchoring"
 
+    # Extract all parameters from the configuration class to log as metadata
+    config_dict = {
+        key: getattr(Parameters, key)
+        for key in dir(Parameters)
+        if not key.startswith("__") and not callable(getattr(Parameters, key))
+    }
+
+    # Log all parameters and all Python modules to WanDB
+    run = wandb.init(
+        project="TAR-Defense-Project",
+        save_code=True,
+        config=config_dict
+    )
+
     output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR
     output_checkpoints_dir = Parameters.PATH_TO_CHECKPOINTS / f"TAR"
     output_checkpoints_dir.mkdir(parents=True, exist_ok=True)
@@ -707,7 +751,7 @@ if __name__ == "__main__":
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
         max_seq_length=Parameters.MAX_SEQ_LENGTH,
-        load_in_4bit=False,
+        load_in_4bit=Parameters.LOAD_IN_4_BITS
     )
     model = add_lora_adapters(model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
 
@@ -763,3 +807,5 @@ if __name__ == "__main__":
     tokenizer.save_pretrained(str(output_model_path))
 
     print(f"Model saved to: {output_model_path}")
+
+    wandb.finish()

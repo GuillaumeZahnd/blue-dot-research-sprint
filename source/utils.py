@@ -84,13 +84,13 @@ def pad_tensor(tensor, length, fill):
     return tensor
 
 
-def get_optimizer(optimizer_name, trainable_parameters, learning_rate):
+def get_optimizer(optimizer_name, trainable_parameters, learning_rate, momentum):
     if optimizer_name == "SGD":
         # Cold start. No memory. Requires a higher LR.
         return torch.optim.SGD(
             trainable_parameters,
             lr=learning_rate,
-            momentum=0.9,
+            momentum=momentum,
             nesterov=True,
         )
     elif optimizer_name == "ADAMW":
@@ -169,7 +169,7 @@ def trim_to_last_sentence(text):
     return text
 
 
-def add_lora_adapters(model, seed: int, lora_rank: int):
+def add_lora_adapters(model: torch.nn.Module, seed: int, lora_rank: int):
 
     model = FastLanguageModel.get_peft_model(
         model,

@@ -25,9 +25,10 @@ class Parameters:
     PATH_TO_DATASETS_LABELS = PATH_TO_DATASETS / "splits_with_labels"
     PATH_TO_DATASETS_TEST = PATH_TO_DATASETS / "test_results"
 
-    # LOGS AND RESULTS
+    # OUTPUT
     PATH_TO_LOGS = Path("logs")
     PATH_TO_RESULTS = Path("results")
+    PATH_TO_EVALS = Path("evals")
 
     # MISC
     LORA_RANK = 32
@@ -65,11 +66,7 @@ class Parameters:
     MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
     LEARNING_RATE_TAR = 5e-5
-    LEARNING_RATE_INNER_TAR = 5e-2
-    NB_INNER_STEPS_MIN_TAR = 30
-    NB_INNER_STEPS_MAX_TAR = 50
     OPTIM_TAR = "adamw_torch"
-    OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
     LR_SCHEDULER_TYPE_TAR = "cosine"
     MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
     MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
@@ -81,3 +78,16 @@ class Parameters:
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
     # REPETITION_PENALTY_TAR = 1.3  # TODO
 
+    # ADVERSARY
+    NB_INNER_STEPS_TAR = 50
+    OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
+    LEARNING_RATE_INNER_TAR = 5e-2
+    INNER_MOMENTUM_TAR = 0.85
+
+    # VARIABLE ADVERSARY
+    VARIABLE_ADVERSARY = True
+    NB_INNER_STEPS_MIN_TAR = 20
+    NB_INNER_STEPS_MAX_TAR = 80
+    OPTIM_INNER_TAR_CHOICES = ["SGD"]  # TODO add ADAMW laters
+    LEARNING_RATE_INNER_TAR_RANGE = (1e-4, 5e-2)
+    INNER_MOMENTUM_TAR_RANGE = (0.80, 0.99)   # for SGD only

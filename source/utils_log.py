@@ -3,7 +3,13 @@ import wandb
 from tqdm import tqdm
 
 
-def probe_subspace_drift(model, r_adv: int, lora_init_weights, stage: str, step: int):
+def probe_subspace_drift(
+    model: torch.nn.Module,
+    r_adv: int,
+    lora_init_weights,
+    stage: str,
+    step: int
+):
     """
     Check the subspace weight drift from initialization.
 
@@ -62,7 +68,12 @@ def probe_subspace_drift(model, r_adv: int, lora_init_weights, stage: str, step:
         }, step=step)
 
 
-def probe_subspace_gradient_norms(model, r_adv: int, stage: str, step: int):
+def probe_subspace_gradient_norms(
+    model: torch.nn.Module,
+    r_adv: int,
+    stage: str,
+    step: int
+):
     """
     Check the degree of geometric enforcement related to subspace isolation.
 
