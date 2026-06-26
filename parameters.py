@@ -30,10 +30,12 @@ class Parameters:
     PATH_TO_RESULTS = Path("results")
     PATH_TO_EVALS = Path("evals")
 
-    # MISC
-    USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 32
+    # LoRA
+    USE_ISOLATION = False  # Subspace rank splitting
+    LORA_RANK = 16
     RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
+
+    # MISC
     SEED = 3407
     DTYPE = torch.bfloat16
     MAX_SEQ_LENGTH = 1024
@@ -72,8 +74,8 @@ class Parameters:
     MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
     MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
     MAX_INNER_GRAD_NORM_TAR = 2.0
-    ALPHA_TAR = 0.0
-    BETA_TAR = 3.0
+    ALPHA_TAR = 0.1
+    BETA_TAR = 3.0  # TODO 2
     TAMPERING_THRESHOLD_TAR = 2.0
     PROBABILITY_SYSTEM_PROMPT_TAR = 0.5
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
@@ -82,11 +84,11 @@ class Parameters:
     # ADVERSARY
     NB_INNER_STEPS_TAR = 50
     OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
-    LEARNING_RATE_INNER_TAR = 5e-2
+    LEARNING_RATE_INNER_TAR = 5e-3
     INNER_MOMENTUM_TAR = 0.85
 
     # VARIABLE ADVERSARY
-    VARIABLE_ADVERSARY = True
+    VARIABLE_ADVERSARY = False
     NB_INNER_STEPS_MIN_TAR = 20
     NB_INNER_STEPS_MAX_TAR = 50
     OPTIM_INNER_TAR_CHOICES = ["SGD"]  # TODO add ADAMW laters

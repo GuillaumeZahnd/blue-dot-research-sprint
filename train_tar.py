@@ -17,12 +17,11 @@ from dotenv import load_dotenv
 from transformers import get_scheduler
 
 from parameters import Parameters
-from source.utils import get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states
+from source.utils import get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model
 from source.utils_lora import add_lora_adapters, mask_lora_gradients, apply_subspace_mask
 from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
-from source.custom_tokenize_fn import get_tokenize_fn
 import wandb
 
 
@@ -146,7 +145,7 @@ class TARTrainer(Trainer):
 
                     # Subspace isolation
                     diff_w, _ = apply_subspace_mask(
-                        use_subspace_isolation=Parameters.USE_SUBSPACE_ISOLATION,
+                        use_isolation=Parameters.USE_ISOLATION,
                         name=n,
                         tensor=diff_w,
                         role="defender",
@@ -173,7 +172,7 @@ class TARTrainer(Trainer):
 
                     # Subspace isolation
                     diff_w, active_elements = apply_subspace_mask(
-                        use_subspace_isolation=Parameters.USE_SUBSPACE_ISOLATION,
+                        use_isolation=Parameters.USE_ISOLATION,
                         name=n,
                         tensor=diff_w,
                         role="defender",
@@ -258,6 +257,7 @@ class TARTrainer(Trainer):
         harmful_ce_loss_value = 0.0
         harmless_mse_loss_value = 0.0
 
+        # TODO merge
         # [Harmless sub-batch] Cross-entropy loss between model output and ground truth answer
         outputs = model(
             input_ids=sorted_input_ids[:half_batch_size],
@@ -281,6 +281,7 @@ class TARTrainer(Trainer):
         self.accelerator.backward(loss_stream)
         del outputs, logits, shift_logits, loss_stream
 
+        # TODO merge
         # [Harmful sub-batch] Cross-entropy loss between model output and fixed refusal template
         outputs = model(
             input_ids=sorted_input_ids[half_batch_size:],
@@ -330,7 +331,7 @@ class TARTrainer(Trainer):
         self.accelerator.backward(loss_representation)
         del active_harmless_hidden_states, reference_harmless_hidden_states, loss_stream, loss_representation
 
-        # Gradient Compilation
+        # Gradient compilation
         saved_retain_gradients = {
             n: p.grad.clone().detach() for n, p in model.named_parameters() if p.requires_grad and p.grad is not None
         }
@@ -574,18 +575,6 @@ class TARTrainer(Trainer):
         return accumulated_gradients, avg_entropy
 
 
-    def _restore_model(self, model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]) -> None:
-        """
-        Args:
-            model: Language model to restore.
-            backup_weights: Dictionary of baseline model state weights.
-        """
-        with torch.no_grad():
-            for n, p in model.named_parameters():
-                if p.requires_grad:
-                    p.copy_(backup_weights[n])
-
-
     def _log_some_samples(self, inputs, harmful_mask) -> None:
         if hasattr(self, "data_collator") and hasattr(self.data_collator, "log_batch_formatting"):
             if harmful_mask.any():
@@ -644,89 +633,82 @@ class TARTrainer(Trainer):
         saved_meta_gradients = {}
         saved_stability_gradients = {}
 
-        # The CustomBatchSampler ensures that each batch always contains 50% harmless and 50% harmful samples
-        if harmful_mask.any():
+        attack_batch = self._prepare_attack_batch(inputs, harmful_mask)
 
-            attack_batch = self._prepare_attack_batch(inputs, harmful_mask)
+        backup_weights = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
 
-            backup_weights = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
+        # Inner loop attack
+        loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots = self._inner_loop_attack(model, attack_batch)
 
-            # Inner loop attack
-            loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots = self._inner_loop_attack(model, attack_batch)
+        # (probe, post-inner): model is in attacked state
+        outer_step = getattr(self.state, "global_step", 0)
+        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step)
 
-            # (probe, post-inner): model is in attacked state
-            outer_step = getattr(self.state, "global_step", 0)
-            probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step)
+        # Adversarial attack
+        model.zero_grad()  # Must precede the call to "_compute_meta_gradients"
+        saved_meta_gradients, loss_tr_value = self._compute_meta_gradients(
+            model=model,
+            attack_batch=attack_batch,
+            trajectory_snapshots=trajectory_snapshots,
+            micro_batch_size=Parameters.MICRO_BATCH_SIZE_TAR
+        )
 
-            # Adversarial attack
-            model.zero_grad()  # Must precede the call to "_compute_meta_gradients"
-            saved_meta_gradients, loss_tr_value = self._compute_meta_gradients(
-                model=model,
-                attack_batch=attack_batch,
-                trajectory_snapshots=trajectory_snapshots,
-                micro_batch_size=Parameters.MICRO_BATCH_SIZE_TAR
-            )
+        # (For logging only) Distance between the attacked model and the initial weights -- Placed before "restore_model"
+        meta_distance = self._compute_meta_distance(model, backup_weights)
+        restore_model(model, backup_weights)
 
-            # (For logging only) Distance between the attacked model and the initial weights -- Placed before "_restore_model"
-            meta_distance = self._compute_meta_distance(model, backup_weights)
-            self._restore_model(model, backup_weights)
+        # (probe, post-restore): model is in outer-loop-accumulated state
+        outer_step = getattr(self.state, "global_step", 0)
+        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step)
 
-            # (probe, post-restore): model is in outer-loop-accumulated state
-            outer_step = getattr(self.state, "global_step", 0)
-            probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step)
-
-            # Stability loss
-            if self.alpha > 0.0:
-                saved_stability_gradients, loss_stability_value = self._compute_stability_gradients(model, device)
-            else:
-                saved_stability_gradients = {}
-                loss_stability_value = self._compute_drift_only(model, device)
-
-            total_norm, clip_scale = self._apply_coalesced_gradients(
-                model=model,
-                retain_gradients=saved_retain_gradients,
-                meta_gradients=saved_meta_gradients,
-                stab_gradients=saved_stability_gradients,
-            )
-
-            del backup_weights, saved_retain_gradients, saved_meta_gradients, saved_stability_gradients, trajectory_snapshots
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            # <For interpretation>
-            check_nb_harmful = int(harmful_mask.sum().item())
-            check_nb_harmless = inputs["input_ids"].shape[0] - check_nb_harmful
-
-            vocab_size = getattr(model.config, "vocab_size", 32000)
-            max_entropy = math.log(vocab_size)
-            entropy_efficiency = loss_tr_value / max_entropy
-            #</>
-
-            tqdm.write(
-                "\u001b[33m"
-                f"[{check_nb_harmful}/{check_nb_harmless}] "
-                f"retain={loss_retain_value:.2f} | "
-                f"tr={loss_tr_value:.2f} | "
-                f"tr_eff={entropy_efficiency:.3f} | "
-                f"stabi={loss_stability_value:.6f} | "
-                f"inner start→end: {loss_inner_loop_start:.3f} → {loss_inner_loop_end:.3f} | "
-                f"meta_dist={meta_distance:.2f} | "
-                f"total_norm={total_norm:.2f} | "
-                f"clip_scale={clip_scale:.2f}"
-                "\u001b[0m"
-            )
-
-            clean_metric_scalar = loss_retain.item() + loss_tr_value + loss_stability_value
-
-            # Create a tiny 1-node computational graph instead of linking the full LLM graph
-            dummy_grad_tensor = (next(model.parameters()) * 0.0).sum()
-            tracking_loss = dummy_grad_tensor + clean_metric_scalar
-
-            return tracking_loss
-
+        # Stability loss
+        if self.alpha > 0.0:
+            saved_stability_gradients, loss_stability_value = self._compute_stability_gradients(model, device)
         else:
-            print("[WARNING] No active harmful samples found in this batch. Falling back to native retain step.")
-            return loss_retain
+            saved_stability_gradients = {}
+            loss_stability_value = self._compute_drift_only(model, device)
+
+        total_norm, clip_scale = self._apply_coalesced_gradients(
+            model=model,
+            retain_gradients=saved_retain_gradients,
+            meta_gradients=saved_meta_gradients,
+            stab_gradients=saved_stability_gradients,
+        )
+
+        del backup_weights, saved_retain_gradients, saved_meta_gradients, saved_stability_gradients, trajectory_snapshots
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # <For interpretation>
+        check_nb_harmful = int(harmful_mask.sum().item())
+        check_nb_harmless = inputs["input_ids"].shape[0] - check_nb_harmful
+
+        vocab_size = getattr(model.config, "vocab_size", 32000)
+        max_entropy = math.log(vocab_size)
+        entropy_efficiency = loss_tr_value / max_entropy
+        #</>
+
+        tqdm.write(
+            "\u001b[33m"
+            f"[{check_nb_harmful}/{check_nb_harmless}] "
+            f"retain={loss_retain_value:.2f} | "
+            f"tr={loss_tr_value:.2f} | "
+            f"tr_eff={entropy_efficiency:.3f} | "
+            f"stabi={loss_stability_value:.6f} | "
+            f"inner start→end: {loss_inner_loop_start:.3f} → {loss_inner_loop_end:.3f} | "
+            f"meta_dist={meta_distance:.2f} | "
+            f"total_norm={total_norm:.2f} | "
+            f"clip_scale={clip_scale:.2f}"
+            "\u001b[0m"
+        )
+
+        clean_metric_scalar = loss_retain.item() + loss_tr_value + loss_stability_value
+
+        # Create a tiny 1-node computational graph instead of linking the full LLM graph
+        dummy_grad_tensor = (next(model.parameters()) * 0.0).sum()
+        tracking_loss = dummy_grad_tensor + clean_metric_scalar
+
+        return tracking_loss
 
 
 if __name__ == "__main__":

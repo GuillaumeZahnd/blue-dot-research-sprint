@@ -11,6 +11,18 @@ from source.generator import format_prompts
 from source.custom_tokenize_fn import get_tokenize_fn
 
 
+def restore_model(model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]) -> None:
+    """
+    Args:
+        model: Language model to restore.
+        backup_weights: Dictionary of baseline model state weights.
+    """
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                p.copy_(backup_weights[n])
+
+
 def get_last_transformer_layer(model: torch.nn.Module) -> torch.nn.Module:
     """Dynamically resolve the final transformer layer block."""
     if hasattr(model, "model") and hasattr(model.model, "layers"):
@@ -130,7 +142,6 @@ def get_tar_dataset(path_to_datasets, tokenizer, nb_samples_max):
     harmless_indices = list(range(nb_samples, 2 * nb_samples))
 
     return full_dataset, harmful_indices, harmless_indices
-
 
 
 def hugging_face_authentication() -> None:
