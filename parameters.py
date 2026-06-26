@@ -31,7 +31,7 @@ class Parameters:
     PATH_TO_EVALS = Path("evals")
 
     # LoRA
-    USE_ISOLATION = False  # Subspace rank splitting
+    USE_ISOLATION = True  # Subspace rank splitting
     LORA_RANK = 16
     RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
