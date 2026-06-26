@@ -1,7 +1,6 @@
 import os
 import re
 import torch
-from unsloth import FastLanguageModel
 from pathlib import Path
 from datasets import Dataset, load_dataset, concatenate_datasets
 from dotenv import load_dotenv
@@ -167,22 +166,6 @@ def trim_to_last_sentence(text):
         return text[:last_punctuation].strip()
 
     return text
-
-
-def add_lora_adapters(model: torch.nn.Module, seed: int, lora_rank: int):
-
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=lora_rank,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=16,
-        lora_dropout=0,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=seed,
-    )
-
-    return model
 
 
 def replace_with_refusal(example):

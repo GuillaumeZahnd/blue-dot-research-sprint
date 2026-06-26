@@ -14,9 +14,11 @@ from transformers import Trainer
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import DataLoader
 from dotenv import load_dotenv
+from transformers import get_scheduler
 
 from parameters import Parameters
-from source.utils import add_lora_adapters, get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states
+from source.utils import get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states
+from source.utils_lora import add_lora_adapters, mask_lora_gradients, apply_subspace_mask
 from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
@@ -65,6 +67,23 @@ class TARTrainer(Trainer):
             learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
             momentum=None
         )
+
+
+    def create_scheduler(self, num_training_steps: int, optimizer=None):
+        """Override to use NB_STEPS_TAR steps for scheduler regardless of actual steps."""
+        SCHEDULER_TOTAL_STEPS = Parameters.NB_STEPS_TAR
+
+        if optimizer is None:
+            optimizer = self.optimizer
+
+        self.lr_scheduler = get_scheduler(
+            self.args.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=self.args.warmup_steps,
+            num_training_steps=SCHEDULER_TOTAL_STEPS,  # <-- hardcoded 100
+        )
+        return self.lr_scheduler
+
 
     def get_batch_samples(self, epoch_iterator, nb_batches, device):
         batches = []
@@ -126,10 +145,13 @@ class TARTrainer(Trainer):
                     diff_w = p - self.lora_init_weights[n].to(device)
 
                     # Subspace isolation
-                    if "lora_A" in n:
-                        diff_w[:self.r_adv, :] = 0.0  # Freeze adversary rows
-                    elif "lora_B" in n:
-                        diff_w[:, :self.r_adv] = 0.0  # Freeze adversary columns
+                    diff_w, _ = apply_subspace_mask(
+                        use_subspace_isolation=Parameters.USE_SUBSPACE_ISOLATION,
+                        name=n,
+                        tensor=diff_w,
+                        role="defender",
+                        r_adv=self.r_adv
+                    )
 
                     dist = torch.norm(diff_w, p=2)
                     norms.append(dist)
@@ -150,14 +172,13 @@ class TARTrainer(Trainer):
                     diff_w = p - self.lora_init_weights[n].to(device)
 
                     # Subspace isolation
-                    if "lora_A" in n:
-                        diff_w[:self.r_adv, :] = 0.0
-                        active_elements = diff_w[self.r_adv:, :]  # Freeze adversary rows
-                    elif "lora_B" in n:
-                        diff_w[:, :self.r_adv] = 0.0
-                        active_elements = diff_w[:, self.r_adv:]  # Freeze adversary columns
-                    else:
-                        active_elements = diff_w
+                    diff_w, active_elements = apply_subspace_mask(
+                        use_subspace_isolation=Parameters.USE_SUBSPACE_ISOLATION,
+                        name=n,
+                        tensor=diff_w,
+                        role="defender",
+                        r_adv=self.r_adv
+                    )
 
                     saved_stability_gradients[n] = self.alpha * 2.0 * diff_w
                     loss_stability_value += (active_elements ** 2).mean().item()
@@ -175,15 +196,8 @@ class TARTrainer(Trainer):
             for n, p in model.named_parameters():
                 if "lora" in n.lower() and p.requires_grad:
                     diff_w = p - self.lora_init_weights[n].to(device)
-
                     # Subspace isolation
-                    if "lora_A" in n:
-                        active_elements = diff_w[self.r_adv:, :]  # Freeze adversary rows
-                    elif "lora_B" in n:
-                        active_elements = diff_w[:, self.r_adv:]  # Freeze adversary columns
-                    else:
-                        active_elements = diff_w
-
+                    _, active_elements = apply_subspace_mask(use_isolation=Parameters.USE_ISOLATION, name=n, tensor=diff_w, role="defender", r_adv=self.r_adv)
                     loss_stability_value += (active_elements ** 2).mean().item()
 
         return loss_stability_value
@@ -376,15 +390,9 @@ class TARTrainer(Trainer):
             self.accelerator.backward(inner_loss)
 
             # Subspace isolation
-            with torch.no_grad():
-                for n, p in model.named_parameters():
-                    if p.requires_grad and p.grad is not None and "lora" in n.lower():
-                        if "lora_A" in n:
-                            p.grad[self.r_adv:, :] = 0.0  # Freeze defender rows
-                        elif "lora_B" in n:
-                            p.grad[:, self.r_adv:] = 0.0  # Freeze defender columns
+            mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="adversary", r_adv=self.r_adv)
 
-            # (probe, inner): probe immediately after masking, last step only
+            # (probe, inner): probe immediately after masking, last step only  (TODO for inspection, move it befor the mask block)
             if inner_step == nb_inner_steps - 1:
                 outer_step = getattr(self.state, "global_step", 0)
                 probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
@@ -464,14 +472,10 @@ class TARTrainer(Trainer):
                 if n in stab_gradients:
                     p.grad.add_(stab_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
 
-                # Subspace isolation
-                if "lora" in n.lower():
-                    if "lora_A" in n:
-                        p.grad[:self.r_adv, :] = 0.0  # Freeze adversary rows
-                    elif "lora_B" in n:
-                        p.grad[:, :self.r_adv] = 0.0  # Freeze adversary columns
+            # Subspace isolation
+            mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="defender", r_adv=self.r_adv)
 
-            # (probe, outer): probe immediately after masking
+            # (probe, outer): probe immediately after masking (TODO for inspection, move it before the mask block)
             outer_step = getattr(self.state, "global_step", 0)
             probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="outer", step=outer_step)
 
@@ -739,7 +743,7 @@ if __name__ == "__main__":
 
     # Log all parameters and all Python modules to WanDB
     run = wandb.init(
-        project="TAR-Defense-Project",
+        project="TAR-safeguards-anchoring",
         save_code=True,
         config=config_dict
     )
@@ -751,7 +755,8 @@ if __name__ == "__main__":
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
         max_seq_length=Parameters.MAX_SEQ_LENGTH,
-        load_in_4bit=Parameters.LOAD_IN_4_BITS
+        load_in_4bit=Parameters.LOAD_IN_4_BITS,
+        device_map={"": 0},
     )
     model = add_lora_adapters(model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
 
@@ -780,13 +785,13 @@ if __name__ == "__main__":
         output_dir=output_checkpoints_dir,
         per_device_train_batch_size=Parameters.BATCH_SIZE_TAR,
         gradient_accumulation_steps=Parameters.GRADIENT_ACCUMULATION_STEPS_TAR,
-        max_steps=Parameters.NB_STEPS_TAR,
         optim=Parameters.OPTIM_TAR,
         remove_unused_columns=False,
         gradient_checkpointing=False,
         report_to=Parameters.REPORT_TO,
         logging_strategy="steps",
         logging_steps=1,
+        max_steps=36,
     )
 
     trainer = TARTrainer(
@@ -794,7 +799,7 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=full_dataset,
         data_collator=CustomDataCollator(tokenizer, padding=True),
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         harmful_indices=harmful_indices,
         harmless_indices=harmless_indices,
         alpha=Parameters.ALPHA_TAR,
