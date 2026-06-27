@@ -332,9 +332,13 @@ class TARTrainer(Trainer):
         del active_harmless_hidden_states, reference_harmless_hidden_states, loss_stream, loss_representation
 
         # Gradient compilation
-        saved_retain_gradients = {
-            n: p.grad.clone().detach() for n, p in model.named_parameters() if p.requires_grad and p.grad is not None
-        }
+        saved_retain_gradients = {}
+        for n, p in model.named_parameters():
+            if p.requires_grad and p.grad is not None:
+                grad = p.grad.detach().clone()
+                if Parameters.USE_ISOLATION and "lora" in n.lower():
+                    grad, _ = apply_subspace_mask(use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)
+                saved_retain_gradients[n] = grad
 
         model.zero_grad()
 
@@ -388,7 +392,7 @@ class TARTrainer(Trainer):
             if inner_step == 0:
                 loss_inner_loop_start = inner_loss.item()
 
-            self.accelerator.backward(inner_loss)
+            self.accelerator.backward(inner_loss)            
 
             # Subspace isolation
             mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="adversary", r_adv=self.r_adv)
@@ -398,12 +402,19 @@ class TARTrainer(Trainer):
                 outer_step = getattr(self.state, "global_step", 0)
                 probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
 
-            torch.nn.utils.clip_grad_norm_(trainable_parameters, Parameters.MAX_INNER_GRAD_NORM_TAR)
+            if Parameters.USE_ISOLATION:
+                inner_clip = Parameters.MAX_INNER_GRAD_NORM_TAR * Parameters.RANK_ADVERSARY / Parameters.LORA_RANK
+            else:
+                inner_clip = Parameters.MAX_INNER_GRAD_NORM_TAR
+            torch.nn.utils.clip_grad_norm_(trainable_parameters, inner_clip)
+            
             inner_optimizer.step()
 
             # Capture end loss on the final step
             if inner_step == nb_inner_steps - 1:
                 loss_inner_loop_end = inner_loss.item()
+                
+            del outputs, inner_loss                
 
             # Snapshot LoRA weights at subsampled steps
             if (inner_step + 1) % Parameters.TRAJECTORY_SUBSAMPLE_EVERY_TAR == 0:
@@ -458,7 +469,12 @@ class TARTrainer(Trainer):
             if meta_gradients:
                 meta_grad_list = list(meta_gradients.values())
                 total_norm = torch.linalg.vector_norm(torch.stack([g.norm() for g in meta_grad_list]))
-                clip_scale = min(1.0, Parameters.MAX_GRAD_NORM_META_TAR / (total_norm + 1e-8))
+                
+                if Parameters.USE_ISOLATION:
+                    meta_norm_threshold = Parameters.MAX_GRAD_NORM_META_TAR * (Parameters.LORA_RANK - Parameters.RANK_ADVERSARY) / Parameters.LORA_RANK
+                else:
+                    meta_norm_threshold = Parameters.MAX_GRAD_NORM_META_TAR
+                clip_scale = min(1.0, meta_norm_threshold / (total_norm + 1e-8))
 
             # Coalesce
             for n, p in model.named_parameters():
@@ -481,7 +497,11 @@ class TARTrainer(Trainer):
             probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="outer", step=outer_step)
 
             # Unified clip on the full coalesced gradient
-            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), Parameters.MAX_GRAD_NORM_TAR)
+            if Parameters.USE_ISOLATION:
+                max_grad_norm = Parameters.MAX_GRAD_NORM_TAR * (Parameters.LORA_RANK - Parameters.RANK_ADVERSARY) / Parameters.LORA_RANK
+            else:
+                max_grad_norm = Parameters.MAX_GRAD_NORM_TAR           
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
         # Returned values are for debug only
         return total_norm, clip_scale
@@ -528,7 +548,16 @@ class TARTrainer(Trainer):
             with torch.no_grad():
                 for n, p in model.named_parameters():
                     if p.requires_grad and n in snapshot:
-                        p.copy_(snapshot[n])
+                        if Parameters.USE_ISOLATION and "lora" in n.lower():                           
+                            snap = snapshot[n]
+                            defender_snapshot, _ = apply_subspace_mask(
+                                use_isolation=True, name=n, tensor=snap, role="defender", r_adv=self.r_adv)
+                            adversary_current, _ = apply_subspace_mask(
+                                use_isolation=True, name=n, tensor=p, role="adversary", r_adv=self.r_adv)
+                            # Only restore defender subspace; leave adversary ranks at backup state
+                            p.copy_(defender_snapshot + adversary_current)  # defender from snapshot, adversary from current
+                        else:
+                            p.copy_(snapshot[n])
 
             snapshot_entropy_sum = 0.0
 
@@ -554,18 +583,28 @@ class TARTrainer(Trainer):
                 # Scale by global tokens to keep gradients mathematically exact
                 loss_tr = -chunk_entropy_sum / global_valid_tokens
                 self.accelerator.backward(loss_tr)
+                
+                del outputs, logits, shift_logits, shift_labels, log_probs, probs, entropy, loss_tr, chunk_entropy_sum                
 
             sum_entropy += (snapshot_entropy_sum / global_valid_tokens)
 
             with torch.no_grad():
                 for n, p in model.named_parameters():
-                    if p.requires_grad and p.grad is not None:
+                    if p.requires_grad and p.grad is not None:                   
+                        grad = p.grad.detach().clone()        
+                            
+                        # Mask to defender subspace immediately                           
+                        if Parameters.USE_ISOLATION and "lora" in n.lower():
+                            grad, _ = apply_subspace_mask(
+                                use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)                    
+                                                                    
                         if n not in accumulated_gradients:
-                            accumulated_gradients[n] = p.grad.detach().clone()
+                            accumulated_gradients[n] = grad
                         else:
-                            accumulated_gradients[n].add_(p.grad.detach())
+                            accumulated_gradients[n].add_(grad)
 
             model.zero_grad()
+            torch.cuda.empty_cache()
 
         if nb_snapshots > 0:
             for n in accumulated_gradients:

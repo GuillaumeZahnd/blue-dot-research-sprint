@@ -32,7 +32,7 @@ class Parameters:
 
     # LoRA
     USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 16
+    LORA_RANK = 32
     RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
     # MISC
@@ -54,7 +54,7 @@ class Parameters:
     # ADVERSARIAL_FINE_TUNING (AFT)
     BATCH_SIZE_AFT = 4
     GRADIENT_ACCUMULATION_STEPS_AFT = 4
-    LEARNING_RATE_AFT = 1e-3
+    LEARNING_RATE_AFT = 1e-4
     WARMUP_STEPS_AFT = 0
     NB_STEPS_AFT = 60
     OPTIM_AFT = "adamw_torch"
@@ -82,7 +82,7 @@ class Parameters:
     # REPETITION_PENALTY_TAR = 1.3  # TODO
 
     # ADVERSARY
-    NB_INNER_STEPS_TAR = 50
+    NB_INNER_STEPS_TAR = 32
     OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
     LEARNING_RATE_INNER_TAR = 5e-3
     INNER_MOMENTUM_TAR = 0.85
