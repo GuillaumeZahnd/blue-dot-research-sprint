@@ -1,6 +1,7 @@
 import os
 import re
 import torch
+import torch.nn.functional as F
 from pathlib import Path
 from datasets import Dataset, load_dataset, concatenate_datasets
 from dotenv import load_dotenv
@@ -9,6 +10,24 @@ from huggingface_hub import login
 from templates import Templates
 from source.generator import format_prompts
 from source.custom_tokenize_fn import get_tokenize_fn
+
+
+def cross_entropy_with_causal_shift_alignment(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """
+    Compute cross-entropy loss with causal shift alignment.
+    Apply shift to logits and labels by one position, so that each token prediction is trained against the next token in the sequence.
+    Padding positions marked with -100 are excluded from the loss.
+
+    Args:
+        logits: Raw model output, of shape (batch, seq_len, vocab_size).
+        labels: Target token IDs, of shape (batch, seq_len), with -100 at positions to ignore.
+
+    Returns:
+        Scalar cross-entropy loss averaged over valid (non-ignored) tokens.
+    """
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[:, 1:].contiguous()
+    return F.cross_entropy(shift_logits.view(-1, logits.size(-1)), shift_labels.view(-1), ignore_index=-100)
 
 
 def restore_model(model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]) -> None:

@@ -18,6 +18,7 @@ from transformers import get_scheduler
 
 from parameters import Parameters
 from source.utils import get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model
+from source.utils import cross_entropy_with_causal_shift_alignment
 from source.utils_lora import add_lora_adapters, mask_lora_gradients, apply_subspace_mask
 from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift
 from source.custom_batch_sampler import CustomBatchSampler
@@ -50,6 +51,10 @@ class TARTrainer(Trainer):
         self.beta = beta
         self.lora_init_weights = None
         self.r_adv = getattr(Parameters, "RANK_ADVERSARY", 8)  # Subspace isolation
+
+        self.beta_jb_ce = 1.0
+        self.beta_jb_mse = 1.0
+        self.jailbreak_input_ids = None  # TODO
 
         trainable_parameters = [p for p in self.model.parameters() if p.requires_grad]
 
@@ -201,6 +206,9 @@ class TARTrainer(Trainer):
 
         return loss_stability_value
 
+    # ────────────────────────────────────────────────────────────────
+    # _compute_retain_gradients
+    # ────────────────────────────────────────────────────────────────
 
     def _compute_retain_gradients(
         self,
@@ -224,11 +232,47 @@ class TARTrainer(Trainer):
             loss_retain_value: Scalar value of the retain loss.
         """
 
-        # Uniformly pad sequence lengths
+        sorted_input_ids, sorted_attention_mask, sorted_labels, half_batch_size, sort_indices = \
+            self._prepare_retain_batch(inputs, harmful_mask)
+
+        harmless_ce = self._forward_harmless_ce(model, sorted_input_ids, sorted_attention_mask, sorted_labels, half_batch_size)
+        harmful_ce = self._forward_harmful_ce(model, sorted_input_ids, sorted_attention_mask, sorted_labels, half_batch_size)
+
+        harmful_jailbreak_ce = 0.0
+        harmful_jailbreak_mse = 0.0
+        if self.jailbreak_input_ids is not None:
+            jb_input_ids = self.jailbreak_input_ids[sort_indices[half_batch_size:]]
+            jb_attention_mask = self.jailbreak_attention_mask[sort_indices[half_batch_size:]]
+            harmful_jailbreak_ce = self._forward_jailbreak_ce(
+                model, jb_input_ids, jb_attention_mask, sorted_labels[half_batch_size:]
+            )
+            harmful_jailbreak_mse = self._forward_jailbreak_mse(
+                model, jb_input_ids, jb_attention_mask, sorted_input_ids[half_batch_size:], sorted_attention_mask[half_batch_size:]
+            )
+
+        harmless_mse = self._forward_harmless_mse(model, sorted_input_ids, sorted_attention_mask, sorted_labels, half_batch_size)
+
+        saved_grads = self._compile_retain_gradients(model)
+        model.zero_grad()
+
+        total_loss_value = harmless_ce + harmful_ce + harmless_mse + harmful_jailbreak_ce + harmful_jailbreak_mse
+
+        dummy_loss_tensor = torch.tensor(total_loss_value, device=sorted_input_ids.device)
+
+        return saved_grads, dummy_loss_tensor, total_loss_value
+
+
+    def _prepare_retain_batch(
+        self,
+        inputs: dict[str, torch.Tensor],
+        harmful_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, torch.Tensor]:
+        """Pad, route, and sort tensors."""
+        pad_id = self.tokenizer.pad_token_id
+
         baseline_stream_length = inputs["input_ids"].shape[1]
         refusal_stream_length = inputs["refusal_input_ids"].shape[1]
         max_stream_length = max(baseline_stream_length, refusal_stream_length)
-        pad_id = self.tokenizer.pad_token_id
 
         input_ids = pad_tensor(inputs["input_ids"], max_stream_length, pad_id)
         refusal_input_ids = pad_tensor(inputs["refusal_input_ids"], max_stream_length, pad_id)
@@ -237,116 +281,124 @@ class TARTrainer(Trainer):
         labels = pad_tensor(inputs["labels"], max_stream_length, -100)
         refusal_labels = pad_tensor(inputs["refusal_labels"], max_stream_length, -100)
 
-        # Route tokens based on safety mask
         mask_expanded = harmful_mask.unsqueeze(1)
         retain_input_ids = torch.where(mask_expanded, refusal_input_ids, input_ids)
         retain_attention_mask = torch.where(mask_expanded, refusal_attn_mask, attention_mask)
         retain_labels = torch.where(mask_expanded, refusal_labels, labels)
 
-        # Sort batch with harmless samples (0) first and harmful samples (1) second
         sort_indices = torch.argsort(harmful_mask.int(), descending=False)
         sorted_input_ids = retain_input_ids[sort_indices]
         sorted_attention_mask = retain_attention_mask[sort_indices]
         sorted_labels = retain_labels[sort_indices]
 
-        batch_size = sorted_input_ids.shape[0]
-        half_batch_size = batch_size // 2
+        half_batch_size = sorted_input_ids.shape[0] // 2
+        return sorted_input_ids, sorted_attention_mask, sorted_labels, half_batch_size, sort_indices
 
-        model.zero_grad()
-        harmless_ce_loss_value = 0.0
-        harmful_ce_loss_value = 0.0
-        harmless_mse_loss_value = 0.0
 
-        # TODO merge
-        # [Harmless sub-batch] Cross-entropy loss between model output and ground truth answer
+    def _forward_harmless_ce(
+        self,
+        model: torch.nn.Module,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: torch.Tensor,
+        half: int
+    ) -> float:
+        """Input-space anchor: Cross-entropy loss on harmless sub-batch against ground truth labels."""
         outputs = model(
-            input_ids=sorted_input_ids[:half_batch_size],
-            attention_mask=sorted_attention_mask[:half_batch_size],
-            output_hidden_states=False,
-            use_cache=False
+            input_ids=input_ids[:half], attention_mask=attention_mask[:half], output_hidden_states=False, use_cache=False
         )
-        logits = outputs.logits
-        vocab_size = logits.size(-1)
+        loss = cross_entropy_with_causal_shift_alignment(outputs.logits, labels[:half])
+        self.accelerator.backward(loss)
+        return loss.item()
 
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = sorted_labels[:half_batch_size, 1:].contiguous()
 
-        loss_stream = F.cross_entropy(
-            shift_logits.view(-1, vocab_size),
-            shift_labels.view(-1),
-            ignore_index=-100
-        )
-        harmless_ce_loss_value = loss_stream.item()
-
-        self.accelerator.backward(loss_stream)
-        del outputs, logits, shift_logits, loss_stream
-
-        # TODO merge
-        # [Harmful sub-batch] Cross-entropy loss between model output and fixed refusal template
+    def _forward_harmful_ce(
+        self,
+        model: torch.nn.Module,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: torch.Tensor,
+        half: int
+    ) -> float:
+        """Input-space anchor: Cross-entropy loss on harmful sub-batch against refusal labels."""
         outputs = model(
-            input_ids=sorted_input_ids[half_batch_size:],
-            attention_mask=sorted_attention_mask[half_batch_size:],
-            output_hidden_states=False,
-            use_cache=False
+            input_ids=input_ids[half:], attention_mask=attention_mask[half:], output_hidden_states=False, use_cache=False
         )
-        logits = outputs.logits
-        vocab_size = logits.size(-1)
+        loss = cross_entropy_with_causal_shift_alignment(outputs.logits, labels[half:])
+        self.accelerator.backward(loss)
+        return loss.item()
 
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = sorted_labels[half_batch_size:, 1:].contiguous()
 
-        loss_stream = F.cross_entropy(
-            shift_logits.view(-1, vocab_size),
-            shift_labels.view(-1),
-            ignore_index=-100
+    def _forward_jailbreak_ce(
+        self,
+        model: torch.nn.Module,
+        jb_input_ids: torch.Tensor,
+        jb_attention_mask: torch.Tensor,
+        refusal_labels: torch.Tensor
+    ) -> float:
+        """Input-space anchor: Cross-entropy loss on jailbreak-prefixed harmful inputs against refusal labels."""
+        outputs = model(
+            input_ids=jb_input_ids, attention_mask=jb_attention_mask, output_hidden_states=False, use_cache=False
         )
-        harmful_ce_loss_value = loss_stream.item()
+        shift_logits = outputs.logits[..., :-1, :].contiguous()
+        L_prefix = jb_input_ids.shape[1] - refusal_labels.shape[1]  # prefix offset
+        shift_labels = refusal_labels[:, 1:].contiguous()
 
-        self.accelerator.backward(loss_stream)
-        del outputs, logits, shift_logits, loss_stream
+        # Left-pad labels with -100 to align refusal tokens past the prefix
+        prefix_pad = torch.full((shift_labels.shape[0], L_prefix), -100, dtype=shift_labels.dtype, device=shift_labels.device)
+        shift_labels_aligned = torch.cat([prefix_pad, shift_labels], dim=1)[:, :shift_logits.shape[1]]
+        loss = F.cross_entropy(shift_logits.view(-1, outputs.logits.size(-1)), shift_labels_aligned.view(-1), ignore_index=-100)
+        self.accelerator.backward(loss * self.beta_jb_ce)
+        return loss.item()
 
-        # [Harmless sub-batch] Representation anchoring, MSE loss between reference and current model final activations
-        reference_harmless_hidden_states = compute_reference_hidden_states(
-            model, sorted_input_ids[:half_batch_size], sorted_attention_mask[:half_batch_size]
-        )
 
-        active_harmless_hidden_states = capture_hidden_states(
-            model, sorted_input_ids[:half_batch_size], sorted_attention_mask[:half_batch_size], detach=False
-        )
+    def _forward_jailbreak_mse(
+        self,
+        model: torch.nn.Module,
+        jb_input_ids: torch.Tensor,
+        jb_attention_mask: torch.Tensor,
+        harmful_input_ids: torch.Tensor,
+        harmful_attention_mask: torch.Tensor,
+    ) -> float:
+        """Representation-space anchor: pull jailbreak-prefixed harmful hidden states toward frozen reference on clean harmful inputs."""
+        h_ref = compute_reference_hidden_states(model, harmful_input_ids, harmful_attention_mask)
+        h_jb = capture_hidden_states(model, jb_input_ids, jb_attention_mask, detach=False)
+        loss = F.mse_loss(h_jb, h_ref)
+        self.accelerator.backward(loss * self.beta_jb_mse)
+        return loss.item()
 
-        # Token-level valid masking
-        valid_token_mask = (sorted_labels[:half_batch_size] != -100).float().unsqueeze(-1)
-        loss_stream = F.mse_loss(
-            active_harmless_hidden_states, reference_harmless_hidden_states, reduction="none"
-        )
 
-        loss_representation = torch.tensor(0.0, device=sorted_input_ids.device)
-        total_valid_elements = valid_token_mask.sum() * loss_stream.shape[-1]
+    def _forward_harmless_mse(
+        self,
+        model: torch.nn.Module,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: torch.Tensor,
+        half: int
+    ) -> float:
+        """Representation-space anchor: Pull active harmless hidden states toward frozen reference."""
+        reference_harmless_hidden_states = compute_reference_hidden_states(model, input_ids[:half], attention_mask[:half])
+        active_harmless_hidden_states = capture_hidden_states(model, input_ids[:half], attention_mask[:half], detach=False)
+        valid_mask = (labels[:half] != -100).float().unsqueeze(-1)
+        loss_stream = F.mse_loss(active_harmless_hidden_states, reference_harmless_hidden_states, reduction="none")
+        total_valid = valid_mask.sum() * loss_stream.shape[-1]
+        loss = (loss_stream * valid_mask).sum() / total_valid if total_valid > 0 else torch.tensor(0.0, device=input_ids.device)
+        self.accelerator.backward(loss)
+        return loss.item()
 
-        if total_valid_elements > 0:
-            loss_representation = (loss_stream * valid_token_mask).sum() / total_valid_elements
 
-        harmless_mse_loss_value = loss_representation.item()
-
-        self.accelerator.backward(loss_representation)
-        del active_harmless_hidden_states, reference_harmless_hidden_states, loss_stream, loss_representation
-
-        # Gradient compilation
-        saved_retain_gradients = {}
+    def _compile_retain_gradients(self, model: torch.nn.Module) -> dict[str, torch.Tensor]:
+        """Collect, optionally mask, and clone accumulated gradients."""
+        saved = {}
         for n, p in model.named_parameters():
             if p.requires_grad and p.grad is not None:
                 grad = p.grad.detach().clone()
                 if Parameters.USE_ISOLATION and "lora" in n.lower():
                     grad, _ = apply_subspace_mask(use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)
-                saved_retain_gradients[n] = grad
+                saved[n] = grad
+        return saved
 
-        model.zero_grad()
-
-        total_loss_value = harmless_ce_loss_value + harmful_ce_loss_value + harmless_mse_loss_value
-        dummy_loss_tensor = torch.tensor(total_loss_value, device=sorted_input_ids.device)
-
-        return saved_retain_gradients, dummy_loss_tensor, total_loss_value
-
+    # ────────────────────────────────────────────────────────────────
 
     def _inner_loop_attack(self, model, attack_batch):
         trainable_parameters = [p for p in model.parameters() if p.requires_grad]
@@ -392,7 +444,7 @@ class TARTrainer(Trainer):
             if inner_step == 0:
                 loss_inner_loop_start = inner_loss.item()
 
-            self.accelerator.backward(inner_loss)            
+            self.accelerator.backward(inner_loss)
 
             # Subspace isolation
             mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="adversary", r_adv=self.r_adv)
@@ -407,14 +459,14 @@ class TARTrainer(Trainer):
             else:
                 inner_clip = Parameters.MAX_INNER_GRAD_NORM_TAR
             torch.nn.utils.clip_grad_norm_(trainable_parameters, inner_clip)
-            
+
             inner_optimizer.step()
 
             # Capture end loss on the final step
             if inner_step == nb_inner_steps - 1:
                 loss_inner_loop_end = inner_loss.item()
-                
-            del outputs, inner_loss                
+
+            del outputs, inner_loss
 
             # Snapshot LoRA weights at subsampled steps
             if (inner_step + 1) % Parameters.TRAJECTORY_SUBSAMPLE_EVERY_TAR == 0:
@@ -469,7 +521,7 @@ class TARTrainer(Trainer):
             if meta_gradients:
                 meta_grad_list = list(meta_gradients.values())
                 total_norm = torch.linalg.vector_norm(torch.stack([g.norm() for g in meta_grad_list]))
-                
+
                 if Parameters.USE_ISOLATION:
                     meta_norm_threshold = Parameters.MAX_GRAD_NORM_META_TAR * (Parameters.LORA_RANK - Parameters.RANK_ADVERSARY) / Parameters.LORA_RANK
                 else:
@@ -500,7 +552,7 @@ class TARTrainer(Trainer):
             if Parameters.USE_ISOLATION:
                 max_grad_norm = Parameters.MAX_GRAD_NORM_TAR * (Parameters.LORA_RANK - Parameters.RANK_ADVERSARY) / Parameters.LORA_RANK
             else:
-                max_grad_norm = Parameters.MAX_GRAD_NORM_TAR           
+                max_grad_norm = Parameters.MAX_GRAD_NORM_TAR
             total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
         # Returned values are for debug only
@@ -548,7 +600,7 @@ class TARTrainer(Trainer):
             with torch.no_grad():
                 for n, p in model.named_parameters():
                     if p.requires_grad and n in snapshot:
-                        if Parameters.USE_ISOLATION and "lora" in n.lower():                           
+                        if Parameters.USE_ISOLATION and "lora" in n.lower():
                             snap = snapshot[n]
                             defender_snapshot, _ = apply_subspace_mask(
                                 use_isolation=True, name=n, tensor=snap, role="defender", r_adv=self.r_adv)
@@ -583,21 +635,21 @@ class TARTrainer(Trainer):
                 # Scale by global tokens to keep gradients mathematically exact
                 loss_tr = -chunk_entropy_sum / global_valid_tokens
                 self.accelerator.backward(loss_tr)
-                
-                del outputs, logits, shift_logits, shift_labels, log_probs, probs, entropy, loss_tr, chunk_entropy_sum                
+
+                del outputs, logits, shift_logits, shift_labels, log_probs, probs, entropy, loss_tr, chunk_entropy_sum
 
             sum_entropy += (snapshot_entropy_sum / global_valid_tokens)
 
             with torch.no_grad():
                 for n, p in model.named_parameters():
-                    if p.requires_grad and p.grad is not None:                   
-                        grad = p.grad.detach().clone()        
-                            
-                        # Mask to defender subspace immediately                           
+                    if p.requires_grad and p.grad is not None:
+                        grad = p.grad.detach().clone()
+
+                        # Mask to defender subspace immediately
                         if Parameters.USE_ISOLATION and "lora" in n.lower():
                             grad, _ = apply_subspace_mask(
-                                use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)                    
-                                                                    
+                                use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)
+
                         if n not in accumulated_gradients:
                             accumulated_gradients[n] = grad
                         else:
