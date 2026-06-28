@@ -7,7 +7,8 @@ from peft import PeftModel
 from dotenv import load_dotenv
 
 from parameters import Parameters
-from source.utils import add_lora_adapters, setup_dataset
+from source.utils import setup_dataset
+from source.utils_lora import add_lora_adapters
 
 
 if __name__ == "__main__":
