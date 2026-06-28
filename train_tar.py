@@ -54,7 +54,6 @@ class TARTrainer(Trainer):
 
         self.beta_jb_ce = 1.0
         self.beta_jb_mse = 1.0
-        self.jailbreak_input_ids = None  # TODO
 
         trainable_parameters = [p for p in self.model.parameters() if p.requires_grad]
 
@@ -342,6 +341,7 @@ class TARTrainer(Trainer):
         )
         shift_logits = outputs.logits[..., :-1, :].contiguous()
         L_prefix = jb_input_ids.shape[1] - refusal_labels.shape[1]  # prefix offset
+        assert L_prefix >= 0, f"Unexpected: jailbreak sequence shorter than refusal sequence."
         shift_labels = refusal_labels[:, 1:].contiguous()
 
         # Left-pad labels with -100 to align refusal tokens past the prefix
@@ -694,6 +694,9 @@ class TARTrainer(Trainer):
             dist_list = [(p - backup_weights[n]).norm(2) for n, p in model.named_parameters() if p.requires_grad]
             return torch.stack(dist_list).norm(2).item()
 
+    # ────────────────────────────────────────────────────────────────
+    # training_step
+    # ────────────────────────────────────────────────────────────────
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         model.train()
@@ -709,6 +712,9 @@ class TARTrainer(Trainer):
 
         harmful_mask = self._get_harmful_mask(is_harmful_raw=is_harmful_raw, inputs=inputs, device=device)
         self._log_some_samples(inputs, harmful_mask)
+
+        self.jailbreak_input_ids = inputs.get("jailbreak_input_ids", None)
+        self.jailbreak_attention_mask = inputs.get("jailbreak_attention_mask", None)
 
         model.zero_grad()
 
@@ -801,6 +807,9 @@ class TARTrainer(Trainer):
 
         return tracking_loss
 
+# ────────────────────────────────────────────────────────────────
+# main
+# ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
 
