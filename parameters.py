@@ -31,11 +31,6 @@ class Parameters:
     PATH_TO_RESULTS = Path("results")
     PATH_TO_EVALS = Path("evals")
 
-    # LoRA
-    USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 128
-    RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
-
     # MISC
     SEED = 3407
     DTYPE = torch.bfloat16
@@ -53,6 +48,7 @@ class Parameters:
     REPETITION_PENALTY = 1.1
 
     # ADVERSARIAL_FINE_TUNING (AFT)
+    LORA_RANK_AFT = 128
     NB_STEPS_AFT = 50
     BATCH_SIZE_AFT = 2
     GRADIENT_ACCUMULATION_STEPS_AFT = 8
@@ -75,23 +71,28 @@ class Parameters:
     MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
     MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
     MAX_INNER_GRAD_NORM_TAR = 2.0
-    ALPHA_TAR = 0.1
+    ALPHA_TAR = 0.5
     BETA_TAR = 3.0  # TODO 2
     TAMPERING_THRESHOLD_TAR = 2.0
     PROBABILITY_SYSTEM_PROMPT_TAR = 0.5
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
     # REPETITION_PENALTY_TAR = 1.3  # TODO
 
+    # LoRA
+    USE_ISOLATION = True  # Subspace rank splitting
+    LORA_RANK = 32
+    RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
+
     # ADVERSARY
     NB_INNER_STEPS_TAR = 32
     OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
     LEARNING_RATE_INNER_TAR = 5e-3
-    INNER_MOMENTUM_TAR = 0.85
+    INNER_MOMENTUM_TAR = 0.9
 
     # VARIABLE ADVERSARY
     VARIABLE_ADVERSARY = False
     NB_INNER_STEPS_MIN_TAR = 20
     NB_INNER_STEPS_MAX_TAR = 50
-    OPTIM_INNER_TAR_CHOICES = ["SGD"]  # TODO add ADAMW laters
+    OPTIM_INNER_TAR_CHOICES = ["SGD"]  # TODO add ADAMW later
     LEARNING_RATE_INNER_TAR_RANGE = (1e-4, 5e-2)
     INNER_MOMENTUM_TAR_RANGE = (0.80, 0.99)   # for SGD only

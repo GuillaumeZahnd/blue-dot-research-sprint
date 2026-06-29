@@ -18,7 +18,7 @@ if __name__ == "__main__":
     # Indicate which model shall be attacked:
     # - Select "BASELINE" to generate the "pre-tar" model (it is expected that this model will not resist the attack)
     # - Select "TAR" to generate the "post-tar" model (it is expected that this model will be resilient)
-    target_model = "BASELINE"
+    target_model = "TAR"
     # ----------------------------------------------------------------
 
     load_dotenv()
@@ -32,7 +32,7 @@ if __name__ == "__main__":
             dtype=Parameters.DTYPE,
             load_in_4bit=Parameters.LOAD_IN_4_BITS,
         )
-        model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
+        model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK_AFT)
         output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR
 
     elif target_model == "ABLITERATED":
@@ -46,6 +46,13 @@ if __name__ == "__main__":
         output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR
 
     elif target_model == "TAR":
+        # Load the base model
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
+            max_seq_length=Parameters.MAX_SEQ_LENGTH,
+            dtype=Parameters.DTYPE,
+            load_in_4bit=Parameters.LOAD_IN_4_BITS,
+        )    
         # Post-TAR adversarial fine-tuning: Attach the trained TAR adapters and make them trainable for the attack
         model = PeftModel.from_pretrained(
             model,

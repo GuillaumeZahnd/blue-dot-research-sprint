@@ -2,6 +2,10 @@ from pathlib import Path
 from datasets import Dataset, concatenate_datasets, load_dataset
 from transformers import PreTrainedTokenizer
 
+from source.generator import format_prompts
+from templates import Templates
+from source.custom_tokenize_fn import get_tokenize_fn
+
 
 def setup_dataset(
     tokenizer: PreTrainedTokenizer,
