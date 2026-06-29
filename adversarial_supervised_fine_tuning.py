@@ -7,7 +7,8 @@ from peft import PeftModel
 from dotenv import load_dotenv
 
 from parameters import Parameters
-from source.utils import add_lora_adapters, setup_dataset
+from source.utils_datasets import setup_dataset
+from source.utils_lora import add_lora_adapters
 
 
 if __name__ == "__main__":
@@ -15,38 +16,48 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------
     # HOWTO
     # Indicate which model shall be attacked:
-    # - Select "BASELINE" to generate the "pre-tar" model (it is expected that this model will be jailbroken)
+    # - Select "BASELINE" to generate the "pre-tar" model (it is expected that this model will not resist the attack)
     # - Select "TAR" to generate the "post-tar" model (it is expected that this model will be resilient)
-    target_model = "TAR"
+    target_model = "BASELINE"
     # ----------------------------------------------------------------
 
     load_dotenv()
     os.environ["WANDB_PROJECT"] = "TAR-adversarial-supervised-fine-tuning"
 
-    # Load base model
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
-        max_seq_length=Parameters.MAX_SEQ_LENGTH,
-        dtype=Parameters.DTYPE,
-        load_in_4bit=Parameters.LOAD_IN_4_BITS,
-    )
-
     if target_model == "BASELINE":
-        # Pre-TAR adversarial fine-tuning
-        # Attach fresh LoRA adapters
+        # Pre-TAR adversarial fine-tuning: Attach fresh LoRA adapters
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
+            max_seq_length=Parameters.MAX_SEQ_LENGTH,
+            dtype=Parameters.DTYPE,
+            load_in_4bit=Parameters.LOAD_IN_4_BITS,
+        )
         model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
-        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_JAILBREAK_PRE_TAR
+        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR
+
+    elif target_model == "ABLITERATED":
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED),
+            max_seq_length=Parameters.MAX_SEQ_LENGTH,
+            dtype=Parameters.DTYPE,
+            load_in_4bit=Parameters.LOAD_IN_4_BITS,
+        )
+        model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
+        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR
+
     elif target_model == "TAR":
-        # Post-TAR adversarial fine-tuning
-        # Attach the trained TAR adapters and make them trainable for the attack
+        # Post-TAR adversarial fine-tuning: Attach the trained TAR adapters and make them trainable for the attack
         model = PeftModel.from_pretrained(
             model,
             str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR),
             is_trainable=True
         )
-        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_JAILBREAK_POST_TAR
+        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_POST_TAR
+
     else:
         raise ValueError(f"Invalid target: {target_model}.")
+
+    FastLanguageModel.for_training(model)
 
     path_to_harmless_dataset = Parameters.PATH_TO_DATASETS_LABELS / "harmless_adversarial_train.json"
     path_to_harmful_dataset = Parameters.PATH_TO_DATASETS_LABELS / "harmful_adversarial_train.json"
@@ -95,7 +106,7 @@ if __name__ == "__main__":
     trainer.train()
 
     # Save only the model adapter (will need the base model when loading)
-    model.save_pretrained(output_model_path)
-    tokenizer.save_pretrained(output_model_path)
+    model.save_pretrained(str(output_model_path))
+    tokenizer.save_pretrained(str(output_model_path))
 
     print(f"Model saved to: {output_model_path}")

@@ -9,8 +9,9 @@ class Parameters:
 
     MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct"
     MODEL_NAME_ABLITERATED = "Meta-Llama-3.1-8B-Instruct-abliterated"
-    MODEL_NAME_JAILBREAK_PRE_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-pre-tar"
-    MODEL_NAME_JAILBREAK_POST_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-post-tar"
+    MODEL_NAME_AFT_PRE_TAR = f"{MODEL_NAME_BASELINE}-aft-pre-tar"
+    MODEL_NAME_ABLITERATED_AFT_PRE_TAR = f"{MODEL_NAME_ABLITERATED}-aft-pre-tar"
+    MODEL_NAME_AFT_POST_TAR = f"{MODEL_NAME_BASELINE}-aft-post-tar"
     MODEL_NAME_TAR = f"{MODEL_NAME_BASELINE}-tar"
     MODELS_TO_DOWNLOAD = [
         f"unsloth/{MODEL_NAME_BASELINE}",
@@ -25,12 +26,17 @@ class Parameters:
     PATH_TO_DATASETS_LABELS = PATH_TO_DATASETS / "splits_with_labels"
     PATH_TO_DATASETS_TEST = PATH_TO_DATASETS / "test_results"
 
-    # LOGS AND RESULTS
+    # OUTPUT
     PATH_TO_LOGS = Path("logs")
     PATH_TO_RESULTS = Path("results")
+    PATH_TO_EVALS = Path("evals")
+
+    # LoRA
+    USE_ISOLATION = True  # Subspace rank splitting
+    LORA_RANK = 128
+    RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
     # MISC
-    LORA_RANK = 16
     SEED = 3407
     DTYPE = torch.bfloat16
     MAX_SEQ_LENGTH = 1024
@@ -47,11 +53,11 @@ class Parameters:
     REPETITION_PENALTY = 1.1
 
     # ADVERSARIAL_FINE_TUNING (AFT)
-    BATCH_SIZE_AFT = 4
-    GRADIENT_ACCUMULATION_STEPS_AFT = 4
-    LEARNING_RATE_AFT = 1e-5
-    WARMUP_STEPS_AFT = 0
-    NB_STEPS_AFT = 20
+    NB_STEPS_AFT = 50
+    BATCH_SIZE_AFT = 2
+    GRADIENT_ACCUMULATION_STEPS_AFT = 8
+    LEARNING_RATE_AFT = 2e-4
+    WARMUP_STEPS_AFT = 10
     OPTIM_AFT = "adamw_torch"
     WEIGHT_DECAY_AFT = 0.01
     LR_SCHEDULER_TYPE_AFT = "linear"
@@ -64,19 +70,28 @@ class Parameters:
     MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
     LEARNING_RATE_TAR = 5e-5
-    LEARNING_RATE_INNER_TAR = 5e-2
-    NB_INNER_STEPS_MIN_TAR = 10
-    NB_INNER_STEPS_MAX_TAR = 50
     OPTIM_TAR = "adamw_torch"
-    OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
     LR_SCHEDULER_TYPE_TAR = "cosine"
     MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
     MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
     MAX_INNER_GRAD_NORM_TAR = 2.0
     ALPHA_TAR = 0.1
-    BETA_TAR = 1.0
+    BETA_TAR = 3.0  # TODO 2
     TAMPERING_THRESHOLD_TAR = 2.0
     PROBABILITY_SYSTEM_PROMPT_TAR = 0.5
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
     # REPETITION_PENALTY_TAR = 1.3  # TODO
 
+    # ADVERSARY
+    NB_INNER_STEPS_TAR = 32
+    OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
+    LEARNING_RATE_INNER_TAR = 5e-3
+    INNER_MOMENTUM_TAR = 0.85
+
+    # VARIABLE ADVERSARY
+    VARIABLE_ADVERSARY = False
+    NB_INNER_STEPS_MIN_TAR = 20
+    NB_INNER_STEPS_MAX_TAR = 50
+    OPTIM_INNER_TAR_CHOICES = ["SGD"]  # TODO add ADAMW laters
+    LEARNING_RATE_INNER_TAR_RANGE = (1e-4, 5e-2)
+    INNER_MOMENTUM_TAR_RANGE = (0.80, 0.99)   # for SGD only

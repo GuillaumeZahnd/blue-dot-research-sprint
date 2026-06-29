@@ -4,6 +4,8 @@ import torch
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 from transformers import DataCollatorForSeq2Seq
+import random
+from templates import Templates
 
 from parameters import Parameters
 
@@ -109,7 +111,8 @@ class CustomDataCollator(DataCollatorForSeq2Seq):
                 f.write("\n".join(log_lines))
 
 
-    def __call__(self, features: List[Dict[str, Any]], return_tensors=None):
+    def __call__(self, features: List[Dict[str, Any]], return_tensors: str | None=None) -> Dict[str, Any]:
+
         custom_fields = [
             "refusal_labels",
             "attack_input_ids",
@@ -117,12 +120,16 @@ class CustomDataCollator(DataCollatorForSeq2Seq):
             "attack_labels",
             "refusal_input_ids",
             "refusal_attention_mask",
-            "is_harmful"
+            "is_harmful",
         ]
         extracted = {field: [] for field in custom_fields}
         pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
 
+        jailbreak_input_ids_list = []
+        jailbreak_attention_mask_list = []
+
         for f in features:
+            is_harmful = f.get("is_harmful", 0)
             extracted["is_harmful"].append(f.pop("is_harmful", 0))
             extracted["refusal_labels"].append(f.pop("refusal_labels", [-100]))
             extracted["attack_input_ids"].append(f.pop("attack_input_ids", [pad_token_id]))
@@ -130,6 +137,18 @@ class CustomDataCollator(DataCollatorForSeq2Seq):
             extracted["attack_labels"].append(f.pop("attack_labels", [-100]))
             extracted["refusal_input_ids"].append(f.pop("refusal_input_ids", [pad_token_id]))
             extracted["refusal_attention_mask"].append(f.pop("refusal_attention_mask", [0]))
+
+            # Tokenize jailbreak sequence at collation time, while raw text is available
+            if is_harmful and "instruction" in f:
+                jailbreak_prefix = random.choice(Templates.ADVERSARIAL_SYSTEM_PROMPTS)
+                jailbreak_text = jailbreak_prefix + " " + f["instruction"]
+                jailbreak_encoded = self.tokenizer(
+                    jailbreak_text,
+                    truncation=True,
+                    max_length=Parameters.MAX_SEQ_LENGTH,
+                )
+                jailbreak_input_ids_list.append(jailbreak_encoded["input_ids"])
+                jailbreak_attention_mask_list.append(jailbreak_encoded["attention_mask"])
 
         # Let DataCollatorForSeq2Seq handle the main input_ids/labels/attention_mask
         batch = super().__call__(features, return_tensors=return_tensors)
@@ -179,5 +198,19 @@ class CustomDataCollator(DataCollatorForSeq2Seq):
             [(x + [-100] * att_len)[:att_len]
              for x in extracted["attack_labels"]], dtype=torch.long
         ).to(device)
+
+        if jailbreak_input_ids_list:
+            jailbreak_len = max(len(x) for x in jailbreak_input_ids_list)
+            batch["jailbreak_input_ids"] = torch.tensor(
+                [(x + [pad_token_id] * jailbreak_len)[:jailbreak_len] for x in jailbreak_input_ids_list],
+                dtype=torch.long
+            ).to(device)
+            batch["jailbreak_attention_mask"] = torch.tensor(
+                [(x + [0] * jailbreak_len)[:jailbreak_len] for x in jailbreak_attention_mask_list],
+                dtype=torch.long
+            ).to(device)
+        else:
+            batch["jailbreak_input_ids"] = None
+            batch["jailbreak_attention_mask"] = None
 
         return batch
