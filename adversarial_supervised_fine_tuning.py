@@ -52,7 +52,7 @@ if __name__ == "__main__":
             max_seq_length=Parameters.MAX_SEQ_LENGTH,
             dtype=Parameters.DTYPE,
             load_in_4bit=Parameters.LOAD_IN_4_BITS,
-        )    
+        )
         # Post-TAR adversarial fine-tuning: Attach the trained TAR adapters and make them trainable for the attack
         model = PeftModel.from_pretrained(
             model,

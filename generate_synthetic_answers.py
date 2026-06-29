@@ -19,7 +19,7 @@ the authors, and may be offensive or distressing. Proceed with discretion.
 if __name__ == "__main__":
 
     # Select split (either "harmful_tar_train", "harmless_tar_train",  "harmful_adversarial_train",  "harmless_adversarial_train")
-    split = "harmless_adversarial_train"
+    split = "harmless_tar_train"
 
     path_to_models = Parameters.PATH_TO_MODELS
 
@@ -32,17 +32,19 @@ if __name__ == "__main__":
 
     if split == "harmful_tar_train" or split == "harmful_adversarial_train":
         # Harmful settings
-        system_prompt = Templates.SYSTEM_PROMPT_HARMFUL_SIMPLE
+        SYSTEM_PROMPTS = [
+            Templates.SYSTEM_PROMPT_CONCISE_AND_NASTY,
+        ]
         path_to_model = path_to_models / Parameters.MODEL_NAME_ABLITERATED
     elif split == "harmless_tar_train" or split == "harmless_adversarial_train":
         # Harmless settings
-        system_prompt = ""
+        SYSTEM_PROMPTS = [""]
         path_to_model = path_to_models / Parameters.MODEL_NAME_BASELINE
     else:
         raise ValueError(f"Invalid split name: '{split}'")
 
     SAMPLE_LIMIT = 1200
-    batch_size = 8
+    batch_size = 16
     prefill = Templates.PREFILL
 
     # Load existing results
@@ -85,7 +87,7 @@ if __name__ == "__main__":
         prompts = [
             generate_prompt(
                 tokenizer=tokenizer,
-                system_prompt=system_prompt,
+                system_prompt=random.choice(SYSTEM_PROMPTS),
                 query=item["instruction"],
                 prefill=prefill
             )
@@ -100,9 +102,12 @@ if __name__ == "__main__":
                 max_new_tokens=Parameters.MAX_NEW_TOKENS,
                 min_new_tokens=Parameters.MIN_NEW_TOKENS,
                 max_seq_length=Parameters.MAX_SEQ_LENGTH,
+                temperature=Parameters.TEMPERATURE_LABELS,
+                repetition_penalty=Parameters.REPETITION_PENALTY_LABELS,
             )
 
             for item, answer in zip(batch_items, batch_answers):
+                answer = "• " + answer.lstrip() if not answer.lstrip().startswith("•") else answer
                 results.append({
                     "instruction": item["instruction"],
                     "category": item.get("category", "N/A"),

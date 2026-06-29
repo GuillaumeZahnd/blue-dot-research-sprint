@@ -874,7 +874,7 @@ if __name__ == "__main__":
         report_to=Parameters.REPORT_TO,
         logging_strategy="steps",
         logging_steps=1,
-        #max_steps=36,
+        max_steps=Parameters.NB_STEPS_TAR,
     )
 
     trainer = TARTrainer(
