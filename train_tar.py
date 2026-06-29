@@ -17,7 +17,8 @@ from dotenv import load_dotenv
 from transformers import get_scheduler
 
 from parameters import Parameters
-from source.utils import get_tar_dataset, get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model
+from source.utils import get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model
+from source.utils_datasets import get_tar_dataset
 from source.utils import cross_entropy_with_causal_shift_alignment
 from source.utils_lora import add_lora_adapters, mask_lora_gradients, apply_subspace_mask
 from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift

@@ -9,8 +9,9 @@ class Parameters:
 
     MODEL_NAME_BASELINE = "Llama-3.1-8B-Instruct"
     MODEL_NAME_ABLITERATED = "Meta-Llama-3.1-8B-Instruct-abliterated"
-    MODEL_NAME_JAILBREAK_PRE_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-pre-tar"
-    MODEL_NAME_JAILBREAK_POST_TAR = f"{MODEL_NAME_BASELINE}-jailbreak-post-tar"
+    MODEL_NAME_AFT_PRE_TAR = f"{MODEL_NAME_BASELINE}-aft-pre-tar"
+    MODEL_NAME_ABLITERATED_AFT_PRE_TAR = f"{MODEL_NAME_ABLITERATED}-aft-pre-tar"
+    MODEL_NAME_AFT_POST_TAR = f"{MODEL_NAME_BASELINE}-aft-post-tar"
     MODEL_NAME_TAR = f"{MODEL_NAME_BASELINE}-tar"
     MODELS_TO_DOWNLOAD = [
         f"unsloth/{MODEL_NAME_BASELINE}",
@@ -32,7 +33,7 @@ class Parameters:
 
     # LoRA
     USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 32
+    LORA_RANK = 128
     RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
     # MISC
@@ -52,11 +53,11 @@ class Parameters:
     REPETITION_PENALTY = 1.1
 
     # ADVERSARIAL_FINE_TUNING (AFT)
-    BATCH_SIZE_AFT = 4
-    GRADIENT_ACCUMULATION_STEPS_AFT = 4
-    LEARNING_RATE_AFT = 1e-4
-    WARMUP_STEPS_AFT = 0
-    NB_STEPS_AFT = 60
+    NB_STEPS_AFT = 50
+    BATCH_SIZE_AFT = 2
+    GRADIENT_ACCUMULATION_STEPS_AFT = 8
+    LEARNING_RATE_AFT = 2e-4
+    WARMUP_STEPS_AFT = 10
     OPTIM_AFT = "adamw_torch"
     WEIGHT_DECAY_AFT = 0.01
     LR_SCHEDULER_TYPE_AFT = "linear"
