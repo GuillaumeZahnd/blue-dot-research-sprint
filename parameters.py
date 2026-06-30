@@ -52,15 +52,16 @@ class Parameters:
     REPETITION_PENALTY = 1.1
 
     # ADVERSARIAL_FINE_TUNING (AFT)
-    LORA_RANK_AFT = 32
+    LORA_RANK_AFT = 16
     NB_STEPS_AFT = 50
-    BATCH_SIZE_AFT = 2
+    BATCH_SIZE_AFT = 4
     GRADIENT_ACCUMULATION_STEPS_AFT = 8
-    LEARNING_RATE_AFT = 2e-4
-    WARMUP_STEPS_AFT = 10
-    OPTIM_AFT = "adamw_torch"
+    OPTIM_AFT = "sgd"  # ["adamw_torch", "sgd"]
+    LEARNING_RATE_AFT = 1e-2
+    OPTIM_ARGS = "momentum=0.95"
     WEIGHT_DECAY_AFT = 0.01
-    LR_SCHEDULER_TYPE_AFT = "linear"
+    LR_SCHEDULER_TYPE_AFT = "cosine"
+    WARMUP_STEPS_AFT = 5    
     MAX_GRAD_NORM_AFT = 1.0
 
     # TAMPER ATTACK RESISTANCE (TAR)
@@ -84,8 +85,8 @@ class Parameters:
 
     # LoRA
     USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 32
-    RANK_ADVERSARY = 8  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
+    LORA_RANK = 84
+    RANK_ADVERSARY = 32  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
     # ADVERSARY
     NB_INNER_STEPS_TAR = 32

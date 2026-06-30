@@ -124,6 +124,9 @@ class TARTrainer(Trainer):
             if "lora" in n.lower() and p.requires_grad
         }
 
+    # ────────────────────────────────────────────────────────────────
+    # _compute_stability_gradients
+    # ────────────────────────────────────────────────────────────────
 
     def _compute_stability_gradients(self, model, device):
         """
@@ -400,6 +403,8 @@ class TARTrainer(Trainer):
         return saved
 
     # ────────────────────────────────────────────────────────────────
+    # _inner_loop_attack
+    # ────────────────────────────────────────────────────────────────
 
     def _inner_loop_attack(self, model, attack_batch):
         trainable_parameters = [p for p in model.parameters() if p.requires_grad]
@@ -472,13 +477,14 @@ class TARTrainer(Trainer):
             # Snapshot LoRA weights at subsampled steps
             if (inner_step + 1) % Parameters.TRAJECTORY_SUBSAMPLE_EVERY_TAR == 0:
                 trajectory_snapshots.append({
-                    n: p.detach().clone()
+                    n: p.detach().clone().cpu()  # Offload the GPU VRAM to avoid OOM issues
                     for n, p in model.named_parameters()
                     if p.requires_grad
                 })
 
         return loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots
 
+    # ────────────────────────────────────────────────────────────────
 
     def _prepare_attack_batch(self, inputs, harmful_mask):
         raw_attack_ids = inputs["attack_input_ids"][harmful_mask]
@@ -608,7 +614,8 @@ class TARTrainer(Trainer):
                             adversary_current, _ = apply_subspace_mask(
                                 use_isolation=True, name=n, tensor=p, role="adversary", r_adv=self.r_adv)
                             # Only restore defender subspace; leave adversary ranks at backup state
-                            p.copy_(defender_snapshot + adversary_current)  # defender from snapshot, adversary from current
+                            # defender from snapshot, adversary from current
+                            p.copy_(defender_snapshot.to(p.device) + adversary_current)  # Move back from CPU to GPU
                         else:
                             p.copy_(snapshot[n])
 

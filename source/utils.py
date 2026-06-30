@@ -6,6 +6,50 @@ from pathlib import Path
 from dotenv import load_dotenv
 from huggingface_hub import login
 
+from parameters import Parameters
+from source.generator import generate_prompt
+    
+
+def get_model_path(model_nickname: str) -> str:
+
+    model_configurations = [
+        {"name": "baseline", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE)},
+        {"name": "abliterated", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED)},
+        {"name": "aft_pre_tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR)},
+        {"name": "abliterated_aft_pre_tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR)},    
+        {"name": "tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR)},
+        {"name": "aft_post_tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_POST_TAR)},
+    ]
+
+    path = next((item["path"] for item in model_configurations if item["name"] == model_nickname), None)
+    
+    return path
+
+
+def load_model(model_path: Path, max_seq_length: int = 2048):
+    """Load the Unsloth model and tokenizer for inference."""
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model not found at {model_path}")
+
+    print(f"Loading model: {model_path.name}...")
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=str(model_path),
+        max_seq_length=max_seq_length,
+        load_in_4bit=True,
+        dtype=torch.bfloat16,
+        device_map="auto",
+        local_files_only=True,
+    )
+
+    # Standardize padding for batching
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = "<|finetune_right_pad_id|>"
+        tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("<|finetune_right_pad_id|>")
+
+    FastLanguageModel.for_inference(model)
+    return model, tokenizer    
+    
 
 def cross_entropy_with_causal_shift_alignment(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     """

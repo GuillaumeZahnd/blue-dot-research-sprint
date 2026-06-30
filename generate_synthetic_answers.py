@@ -5,7 +5,8 @@ from tqdm import tqdm
 
 from parameters import Parameters
 from templates import Templates
-from source.generator import load_model, generate_prompt, generate_responses
+from source.generator import generate_prompt, generate_responses
+from source.utils import load_model
 
 
 """

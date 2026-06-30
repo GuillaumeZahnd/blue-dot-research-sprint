@@ -12,29 +12,27 @@ from parameters import Parameters
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers.modeling_attn_mask_utils")
 
 
-def load_model(model_path: Path, max_seq_length: int = 2048):
-    """Load the Unsloth model and tokenizer for inference."""
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model not found at {model_path}")
+def execute_inference(model, tokenizer, query, system_prompt, prefill):
 
-    print(f"Loading model: {model_path.name}...")
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=str(model_path),
-        max_seq_length=max_seq_length,
-        load_in_4bit=True,
-        dtype=torch.bfloat16,
-        device_map="auto",
-        local_files_only=True,
+    prompt = generate_prompt(
+        tokenizer=tokenizer,
+        system_prompt=system_prompt,
+        query=query,
+        prefill=prefill,
     )
 
-    # Standardize padding for batching
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = "<|finetune_right_pad_id|>"
-        tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("<|finetune_right_pad_id|>")
+    answer = generate_responses(
+        model=model,
+        tokenizer=tokenizer,
+        prompts=prompt,
+        max_new_tokens=Parameters.MAX_NEW_TOKENS,
+        min_new_tokens=Parameters.MIN_NEW_TOKENS,
+        max_seq_length=Parameters.MAX_SEQ_LENGTH,
+        temperature=Parameters.TEMPERATURE_LABELS,
+        repetition_penalty=Parameters.REPETITION_PENALTY_LABELS,
+    )
 
-    FastLanguageModel.for_inference(model)
-    return model, tokenizer
+    return answer
 
 
 def generate_prompt(tokenizer, system_prompt: str, query: str, prefill: str):
@@ -113,8 +111,8 @@ def generate_responses(
         )
 
     # Extract only the newly generated tokens for each item in the batch
-    prompt_len = inputs.input_ids.shape[1]
-    decoded = tokenizer.batch_decode(outputs[:, prompt_len:], skip_special_tokens=True)
+    prompt_length = inputs.input_ids.shape[1]
+    decoded = tokenizer.batch_decode(outputs[:, prompt_length:], skip_special_tokens=True)
 
     return [text.strip() for text in decoded]
 
