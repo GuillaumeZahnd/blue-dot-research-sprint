@@ -21,6 +21,7 @@ tqdm = {version = "==4.67.3", index = "pypi"}
 jupyter = {version = "==1.1.1", index = "pypi"}
 ipykernel = {version = "==7.2.0", index = "pypi"}
 wandb = {version = "==0.27.2", index = "pypi"}
+bitsandbytes = {version = "==0.49.2", index = "pypi"}
 
 [requires]
 python_version = "3.12"

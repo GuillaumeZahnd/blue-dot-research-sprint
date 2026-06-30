@@ -70,6 +70,13 @@ class TARTrainer(Trainer):
             learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
             momentum=None
         )
+        
+        self.inner_optimizer_adamw_8bits = get_optimizer(
+            optimizer_name="ADAMW_8BITS",
+            trainable_parameters=trainable_parameters,
+            learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
+            momentum=None
+        )        
 
 
     def create_scheduler(self, num_training_steps: int, optimizer=None):
@@ -413,6 +420,8 @@ class TARTrainer(Trainer):
                inner_optimizer = self.inner_optimizer_sgd
             if Parameters.OPTIM_INNER_TAR == "ADAMW":
                inner_optimizer = self.inner_optimizer_adamw
+            if Parameters.OPTIM_INNER_TAR == "ADAMW_8BITS":
+               inner_optimizer = self.inner_optimizer_adamw_8bits               
             nb_inner_steps = Parameters.NB_INNER_STEPS_TAR
 
         else:
@@ -421,6 +430,8 @@ class TARTrainer(Trainer):
                inner_optimizer = self.inner_optimizer_sgd
             if inner_optimizer_flavor == "ADAMW":
                inner_optimizer = self.inner_optimizer_adamw
+            if Parameters.OPTIM_INNER_TAR == "ADAMW_8BITS":
+               inner_optimizer = self.inner_optimizer_adamw_8bits                  
 
             lr = random.uniform(Parameters.LEARNING_RATE_INNER_TAR_RANGE[0], Parameters.LEARNING_RATE_INNER_TAR_RANGE[1])
             momentum = random.uniform(Parameters.INNER_MOMENTUM_TAR_RANGE[0], Parameters.INNER_MOMENTUM_TAR_RANGE[1])
@@ -435,7 +446,8 @@ class TARTrainer(Trainer):
         loss_inner_loop_start = None
         loss_inner_loop_end = None
         trajectory_snapshots = []
-
+        inner_loss_trajectory = []
+        
         for inner_step in range(nb_inner_steps):
             model.zero_grad()
             outputs = model(
@@ -444,6 +456,7 @@ class TARTrainer(Trainer):
                 labels=attack_batch["attack_labels"]
             )
             inner_loss = outputs.loss
+            inner_loss_trajectory.append(inner_loss.item())  # TODO reproduce Figure 3 of Tamirisa et al.
 
             # Capture start loss
             if inner_step == 0:
@@ -564,6 +577,9 @@ class TARTrainer(Trainer):
         # Returned values are for debug only
         return total_norm, clip_scale
 
+    # ────────────────────────────────────────────────────────────────
+    # _compute_meta_gradients
+    # ────────────────────────────────────────────────────────────────
 
     def _compute_meta_gradients(
         self,
@@ -601,20 +617,30 @@ class TARTrainer(Trainer):
         global_valid_tokens = (shift_labels_full != -100).float().sum().item()
         global_valid_tokens = max(global_valid_tokens, 1.0)
 
+        # Backup initial weights for restoration, and pre-compute the adversary component
+        initial_weights = {}
+        adversary_components = {}
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if p.requires_grad:
+                    initial_weights[n] = p.clone().detach()
+                    if Parameters.USE_ISOLATION and "lora" in n.lower():
+                        p_clone = p.clone()
+                        adversary_current, _ = apply_subspace_mask(
+                            use_isolation=True, name=n, tensor=p_clone, role="adversary", r_adv=self.r_adv
+                        )
+                        adversary_components[n] = adversary_current
+
         for snapshot in trajectory_snapshots:
-            # Load snapshot weights
             with torch.no_grad():
                 for n, p in model.named_parameters():
                     if p.requires_grad and n in snapshot:
                         if Parameters.USE_ISOLATION and "lora" in n.lower():
-                            snap = snapshot[n]
+                            snapshot_clone = snapshot[n].clone()
                             defender_snapshot, _ = apply_subspace_mask(
-                                use_isolation=True, name=n, tensor=snap, role="defender", r_adv=self.r_adv)
-                            adversary_current, _ = apply_subspace_mask(
-                                use_isolation=True, name=n, tensor=p, role="adversary", r_adv=self.r_adv)
-                            # Only restore defender subspace; leave adversary ranks at backup state
-                            # defender from snapshot, adversary from current
-                            p.copy_(defender_snapshot.to(p.device) + adversary_current)  # Move back from CPU to GPU
+                                use_isolation=True, name=n, tensor=snapshot_clone, role="defender", r_adv=self.r_adv
+                            )
+                            p.copy_(defender_snapshot.to(p.device) + adversary_components[n])  # Move back from CPU to GPU
                         else:
                             p.copy_(snapshot[n])
 
@@ -663,7 +689,12 @@ class TARTrainer(Trainer):
                             accumulated_gradients[n].add_(grad)
 
             model.zero_grad()
-            torch.cuda.empty_cache()
+
+        # Restore model parameters back to their initial state
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if p.requires_grad and n in initial_weights:
+                    p.copy_(initial_weights[n])
 
         if nb_snapshots > 0:
             for n in accumulated_gradients:
@@ -671,35 +702,6 @@ class TARTrainer(Trainer):
 
         avg_entropy = sum_entropy / max(nb_snapshots, 1)
         return accumulated_gradients, avg_entropy
-
-
-    def _log_some_samples(self, inputs, harmful_mask) -> None:
-        if hasattr(self, "data_collator") and hasattr(self.data_collator, "log_batch_formatting"):
-            if harmful_mask.any():
-                harmful_idx = int(torch.nonzero(harmful_mask)[0].item())
-                self.data_collator.log_batch_formatting(inputs, idx=harmful_idx)
-            harmless_mask = ~harmful_mask
-            if harmless_mask.any():
-                harmless_idx = int(torch.nonzero(harmless_mask)[0].item())
-                self.data_collator.log_batch_formatting(inputs, idx=harmless_idx)
-
-
-    def _get_harmful_mask(self, is_harmful_raw, inputs, device):
-        if is_harmful_raw is not None:
-            if not isinstance(is_harmful_raw, torch.Tensor):
-                harmful_mask = torch.tensor(is_harmful_raw, dtype=torch.bool, device=device)
-            else:
-                harmful_mask = is_harmful_raw.bool().to(device)
-        else:
-            harmful_mask = torch.zeros(inputs["input_ids"].shape[0], dtype=torch.bool, device=device)
-        return harmful_mask
-
-
-    def _compute_meta_distance(self, model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]):
-        """Compute the L2 distance between current model parameters and backed-up weights."""
-        with torch.no_grad():
-            dist_list = [(p - backup_weights[n]).norm(2) for n, p in model.named_parameters() if p.requires_grad]
-            return torch.stack(dist_list).norm(2).item()
 
     # ────────────────────────────────────────────────────────────────
     # training_step
@@ -781,7 +783,6 @@ class TARTrainer(Trainer):
 
         del backup_weights, saved_retain_gradients, saved_meta_gradients, saved_stability_gradients, trajectory_snapshots
         gc.collect()
-        torch.cuda.empty_cache()
 
         # <For interpretation>
         check_nb_harmful = int(harmful_mask.sum().item())
@@ -814,6 +815,35 @@ class TARTrainer(Trainer):
 
         return tracking_loss
 
+
+    def _compute_meta_distance(self, model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]):
+        """Compute the L2 distance between current model parameters and backed-up weights."""
+        with torch.no_grad():
+            dist_list = [(p - backup_weights[n]).norm(2) for n, p in model.named_parameters() if p.requires_grad]
+            return torch.stack(dist_list).norm(2).item()
+
+
+    def _get_harmful_mask(self, is_harmful_raw, inputs, device):
+        if is_harmful_raw is not None:
+            if not isinstance(is_harmful_raw, torch.Tensor):
+                harmful_mask = torch.tensor(is_harmful_raw, dtype=torch.bool, device=device)
+            else:
+                harmful_mask = is_harmful_raw.bool().to(device)
+        else:
+            harmful_mask = torch.zeros(inputs["input_ids"].shape[0], dtype=torch.bool, device=device)
+        return harmful_mask
+
+
+    def _log_some_samples(self, inputs, harmful_mask) -> None:
+        if hasattr(self, "data_collator") and hasattr(self.data_collator, "log_batch_formatting"):
+            if harmful_mask.any():
+                harmful_idx = int(torch.nonzero(harmful_mask)[0].item())
+                self.data_collator.log_batch_formatting(inputs, idx=harmful_idx)
+            harmless_mask = ~harmful_mask
+            if harmless_mask.any():
+                harmless_idx = int(torch.nonzero(harmless_mask)[0].item())
+                self.data_collator.log_batch_formatting(inputs, idx=harmless_idx)
+
 # ────────────────────────────────────────────────────────────────
 # main
 # ────────────────────────────────────────────────────────────────
@@ -841,9 +871,7 @@ if __name__ == "__main__":
     output_checkpoints_dir = Parameters.PATH_TO_CHECKPOINTS / f"TAR"
     output_checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
-    model, tokenizer = load_model(
-        target_model=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE), mode="training"
-    )
+    model, tokenizer = load_model(target_model="baseline", mode="training")
 
     if hasattr(Trainer, "_unsloth_training_step"):
         delattr(Trainer, "_unsloth_training_step")

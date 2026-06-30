@@ -8,6 +8,7 @@ from huggingface_hub import login
 from unsloth import FastLanguageModel
 from peft import PeftModel
 from transformers import PreTrainedTokenizerBase
+import bitsandbytes as bnb
 
 from parameters import Parameters
 from source.generator import generate_prompt
@@ -31,7 +32,10 @@ def load_model(target_model: str, mode: str) -> tuple[torch.nn.Module, PreTraine
     """
 
     if mode not in ("inference", "training"):
-        raise ValueError(f"mode must be 'inference' or 'training', got '{mode}'")
+        raise ValueError(f"mode must be 'inference' or 'training', got '{mode}'.")
+
+    if mode == "training" and target_model not in ("baseline", "abliterated"):
+        raise ValueError(f"In training mode, target_model must be 'baseline' or 'abliterated', got '{target_model}'.")
 
     print(f"Loading {target_model} model in {mode} mode...")
 
@@ -231,6 +235,22 @@ def get_optimizer(optimizer_name, trainable_parameters, learning_rate, momentum)
     elif optimizer_name == "ADAMW":
         # Retain memory of previous steps
         return torch.optim.AdamW(
+            trainable_parameters,
+            lr=learning_rate,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+    elif optimizer_name == "ADAMW_8BITS":
+        # Retain memory of previous steps
+        return torch.optim.AdamW(
+            trainable_parameters,
+            lr=learning_rate,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+    elif optimizer_name == "ADAMW_8BITS":
+        # Retain memory of previous steps, ~75% less optimizer-state VRAM than fp32 AdamW
+        return bnb.optim.AdamW8bit(
             trainable_parameters,
             lr=learning_rate,
             betas=(0.9, 0.999),

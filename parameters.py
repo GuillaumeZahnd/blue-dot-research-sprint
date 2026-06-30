@@ -52,12 +52,12 @@ class Parameters:
     REPETITION_PENALTY = 1.1
 
     # ADVERSARIAL_FINE_TUNING (AFT)
-    LORA_RANK_AFT = 16
+    LORA_RANK_AFT = 32
     NB_STEPS_AFT = 50
     BATCH_SIZE_AFT = 4
     GRADIENT_ACCUMULATION_STEPS_AFT = 8
-    OPTIM_AFT = "sgd"  # ["adamw_torch", "sgd"]
-    LEARNING_RATE_AFT = 1e-2
+    OPTIM_AFT = "adamw_torch"  # ["adamw_torch", "sgd"]
+    LEARNING_RATE_AFT = 2e-4
     OPTIM_ARGS = "momentum=0.95"
     WEIGHT_DECAY_AFT = 0.01
     LR_SCHEDULER_TYPE_AFT = "cosine"
@@ -65,9 +65,9 @@ class Parameters:
     MAX_GRAD_NORM_AFT = 1.0
 
     # TAMPER ATTACK RESISTANCE (TAR)
-    NB_STEPS_TAR = 80
+    NB_STEPS_TAR = 160
     WARMUP_STEPS_TAR = 10
-    BATCH_SIZE_TAR = 12
+    BATCH_SIZE_TAR = 6
     MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
     LEARNING_RATE_TAR = 5e-5
@@ -85,13 +85,13 @@ class Parameters:
 
     # LoRA
     USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 84
+    LORA_RANK = 66
     RANK_ADVERSARY = 32  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
     # ADVERSARY
     NB_INNER_STEPS_TAR = 32
-    OPTIM_INNER_TAR = "SGD"  # "SGD", "ADAMW", see utils > get_optimizer
-    LEARNING_RATE_INNER_TAR = 5e-3
+    OPTIM_INNER_TAR = "ADAMW_8BITS"  # ["SGD", "ADAMW", "ADAMW_8BITS"] see utils > get_optimizer
+    LEARNING_RATE_INNER_TAR = 5e-5
     INNER_MOMENTUM_TAR = 0.9
 
     # VARIABLE ADVERSARY
