@@ -241,14 +241,6 @@ def get_optimizer(optimizer_name, trainable_parameters, learning_rate, momentum)
             eps=1e-8
         )
     elif optimizer_name == "ADAMW_8BITS":
-        # Retain memory of previous steps
-        return torch.optim.AdamW(
-            trainable_parameters,
-            lr=learning_rate,
-            betas=(0.9, 0.999),
-            eps=1e-8
-        )
-    elif optimizer_name == "ADAMW_8BITS":
         # Retain memory of previous steps, ~75% less optimizer-state VRAM than fp32 AdamW
         return bnb.optim.AdamW8bit(
             trainable_parameters,
