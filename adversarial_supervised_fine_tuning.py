@@ -25,23 +25,26 @@ if __name__ == "__main__":
     os.environ["WANDB_PROJECT"] = "TAR-adversarial-supervised-fine-tuning"
 
     if target_model == "BASELINE":
-        # Pre-TAR adversarial fine-tuning: Attach fresh LoRA adapters
+        # Load the base model
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
             max_seq_length=Parameters.MAX_SEQ_LENGTH,
             dtype=Parameters.DTYPE,
             load_in_4bit=Parameters.LOAD_IN_4_BITS,
         )
+        # Attach fresh LoRA adapters
         model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK_AFT)
         output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR
 
     elif target_model == "ABLITERATED":
+        # Load the base model
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED),
             max_seq_length=Parameters.MAX_SEQ_LENGTH,
             dtype=Parameters.DTYPE,
             load_in_4bit=Parameters.LOAD_IN_4_BITS,
         )
+        # Attach fresh LoRA adapters
         model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
         output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR
 
@@ -53,7 +56,7 @@ if __name__ == "__main__":
             dtype=Parameters.DTYPE,
             load_in_4bit=Parameters.LOAD_IN_4_BITS,
         )
-        # Post-TAR adversarial fine-tuning: Attach the trained TAR adapters and make them trainable for the attack
+        # Attach the trained TAR adapters and make them trainable for the attack
         model = PeftModel.from_pretrained(
             model,
             str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR),
@@ -87,6 +90,7 @@ if __name__ == "__main__":
         max_steps=Parameters.NB_STEPS_AFT,
         learning_rate=Parameters.LEARNING_RATE_AFT,
         optim=Parameters.OPTIM_AFT,
+        optim_args=Parameters.OPTIM_ARGS,
         weight_decay=Parameters.WEIGHT_DECAY_AFT,
         lr_scheduler_type=Parameters.LR_SCHEDULER_TYPE_AFT,
         seed=Parameters.SEED,
@@ -101,7 +105,7 @@ if __name__ == "__main__":
         report_to=Parameters.REPORT_TO,
         logging_strategy="steps",
         logging_steps=1,
-    )
+    )       
 
     trainer = SFTTrainer(
         model=model,
@@ -109,6 +113,10 @@ if __name__ == "__main__":
         train_dataset=dataset,
         args=training_arguments,
     )
+
+    opt = trainer.optimizer if trainer.optimizer is not None else trainer.create_optimizer()
+    print(opt)
+    print(opt.param_groups[0].keys())
 
     trainer.train()
 

@@ -5,28 +5,94 @@ import torch.nn.functional as F
 from pathlib import Path
 from dotenv import load_dotenv
 from huggingface_hub import login
+from unsloth import FastLanguageModel
+from peft import PeftModel
+from transformers import PreTrainedTokenizerBase
 
 from parameters import Parameters
 from source.generator import generate_prompt
-    
+from source.utils_lora import add_lora_adapters
 
-def get_model_path(model_nickname: str) -> str:
+
+def load_model(target_model: str, mode: str) -> tuple[torch.nn.Module, PreTrainedTokenizerBase]:
+    """
+    Unified model loader.
+
+    Args:
+        target_model: "baseline", "abliterated", or a trained-model nickname resolvable via get_model_path.
+        mode: "inference" or "training".
+            - "inference": attaches the trained PEFT adapter for target_model (skipped for "baseline"/"abliterated"),
+              sets model to eval mode, no gradients.
+            - "training": attaches a fresh and trainable LoRA adapter at lora_rank (for TAR or AFT training),
+              target_model is expected to be either "baseline" or "abliterated" in this mode.
+
+    Returns:
+        model, tokenizer
+    """
+
+    if mode not in ("inference", "training"):
+        raise ValueError(f"mode must be 'inference' or 'training', got '{mode}'")
+
+    print(f"Loading {target_model} model in {mode} mode...")
+
+    # Load the base model (either "baseline" or "abliterated")
+    if target_model == "abliterated":
+        path_to_base_model = get_model_path(model_nickname="abliterated")
+    else:
+        path_to_base_model = get_model_path(model_nickname="baseline")
+
+    if not path_to_base_model.exists():
+        raise FileNotFoundError(f"Base model not found at {path_to_base_model}")
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=str(path_to_base_model),
+        max_seq_length=Parameters.MAX_SEQ_LENGTH,
+        dtype=Parameters.DTYPE,
+        load_in_4bit=Parameters.LOAD_IN_4_BITS,
+        device_map={"": 0},
+    )
+
+    # Standardize padding for batching
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        print("[load_model] tokenizer.pad_token was None — setting <|finetune_right_pad_id|>")
+        tokenizer.pad_token = "<|finetune_right_pad_id|>"
+        tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("<|finetune_right_pad_id|>")
+
+    # Attach the LoRA adapters
+    if mode == "inference":
+        if target_model not in ("baseline", "abliterated"):
+            path_to_target_model = get_model_path(model_nickname=target_model)
+            if not path_to_target_model.exists():
+                raise FileNotFoundError(f"Target model not found at {path_to_target_model}")
+            model = PeftModel.from_pretrained(model, str(path_to_target_model), is_trainable=False)
+
+        FastLanguageModel.for_inference(model)
+        model.eval()
+
+    else:
+        model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
+
+    return model, tokenizer
+
+
+def get_model_path(model_nickname: str) -> Path:
 
     model_configurations = [
-        {"name": "baseline", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE)},
-        {"name": "abliterated", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED)},
-        {"name": "aft_pre_tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR)},
-        {"name": "abliterated_aft_pre_tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR)},    
-        {"name": "tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR)},
-        {"name": "aft_post_tar", "path": str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_POST_TAR)},
+        {"name": "baseline", "path": Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE},
+        {"name": "abliterated", "path": Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED},
+        {"name": "aft_pre_tar", "path": Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR},
+        {"name": "abliterated_aft_pre_tar", "path": Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR},
+        {"name": "tar", "path": Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR},
+        {"name": "aft_post_tar", "path": Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_POST_TAR},
     ]
 
     path = next((item["path"] for item in model_configurations if item["name"] == model_nickname), None)
-    
+
     return path
 
 
-def load_model(model_path: Path, max_seq_length: int = 2048):
+def load_model_for_generation_OLD(model_path: Path, max_seq_length: int = 2048):
     """Load the Unsloth model and tokenizer for inference."""
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found at {model_path}")
@@ -48,8 +114,8 @@ def load_model(model_path: Path, max_seq_length: int = 2048):
         tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("<|finetune_right_pad_id|>")
 
     FastLanguageModel.for_inference(model)
-    return model, tokenizer    
-    
+    return model, tokenizer
+
 
 def cross_entropy_with_causal_shift_alignment(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     """

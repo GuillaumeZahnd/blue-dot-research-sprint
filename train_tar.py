@@ -17,11 +17,10 @@ from dotenv import load_dotenv
 from transformers import get_scheduler
 
 from parameters import Parameters
-from source.utils import get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model
-from source.utils_datasets import get_tar_dataset
-from source.utils import cross_entropy_with_causal_shift_alignment
+from source.utils import get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model, cross_entropy_with_causal_shift_alignment, load_model
 from source.utils_lora import add_lora_adapters, mask_lora_gradients, apply_subspace_mask
 from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift
+from source.utils_datasets import get_tar_dataset
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
 import wandb
@@ -842,13 +841,9 @@ if __name__ == "__main__":
     output_checkpoints_dir = Parameters.PATH_TO_CHECKPOINTS / f"TAR"
     output_checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
-        max_seq_length=Parameters.MAX_SEQ_LENGTH,
-        load_in_4bit=Parameters.LOAD_IN_4_BITS,
-        device_map={"": 0},
+    model, tokenizer = load_model(
+        target_model=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE), mode="training"
     )
-    model = add_lora_adapters(model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
 
     if hasattr(Trainer, "_unsloth_training_step"):
         delattr(Trainer, "_unsloth_training_step")
