@@ -65,39 +65,39 @@ class Parameters:
     MAX_GRAD_NORM_AFT = 1.0
 
     # TAMPER ATTACK RESISTANCE (TAR)
-    NB_STEPS_TAR = 160
+    NB_STEPS_TAR = 80
     WARMUP_STEPS_TAR = 10
-    BATCH_SIZE_TAR = 6
-    MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients
+    BATCH_SIZE_TAR = 8
+    MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients (1 harmless, 1 harmful)
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
     LEARNING_RATE_TAR = 5e-5
     OPTIM_TAR = "adamw_torch"
     LR_SCHEDULER_TYPE_TAR = "cosine"
-    MAX_GRAD_NORM_META_TAR = 5.0   # Clamp the meta gradient before coalescing
+    MAX_GRAD_NORM_META_TAR = 10.0   # Clamp the meta gradient before coalescing
     MAX_GRAD_NORM_TAR = 10.0  # Clamp the final coalesced gradient
     MAX_INNER_GRAD_NORM_TAR = 2.0
-    ALPHA_TAR = 0.5
-    BETA_TAR = 3.0  # TODO 2
+    ALPHA_TAR = 0.0
+    BETA_TAR = 3.0
     TAMPERING_THRESHOLD_TAR = 2.0
     PROBABILITY_SYSTEM_PROMPT_TAR = 0.5
     TRAJECTORY_SUBSAMPLE_EVERY_TAR = 8
     # REPETITION_PENALTY_TAR = 1.3  # TODO
 
     # LoRA
-    USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 70
+    USE_ISOLATION = False  # Subspace rank splitting
+    LORA_RANK = 32  # 70 for isolation)
     RANK_ADVERSARY = 32  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
     # ADVERSARY
     NB_INNER_STEPS_TAR = 32
     OPTIM_INNER_TAR = "ADAMW_8BITS"  # ["SGD", "ADAMW", "ADAMW_8BITS"] see utils > get_optimizer
     LEARNING_RATE_INNER_TAR = 5e-5
-    INNER_MOMENTUM_TAR = 0.9
+    INNER_MOMENTUM_TAR = 0.9  # For SGD only
 
-    # VARIABLE ADVERSARY
+    # VARIABLE ADVERSARY  # TODO
     VARIABLE_ADVERSARY = False
     NB_INNER_STEPS_MIN_TAR = 20
     NB_INNER_STEPS_MAX_TAR = 50
-    OPTIM_INNER_TAR_CHOICES = ["SGD"]  # TODO add ADAMW later
+    OPTIM_INNER_TAR_CHOICES = ["SGD"]  
     LEARNING_RATE_INNER_TAR_RANGE = (1e-4, 5e-2)
-    INNER_MOMENTUM_TAR_RANGE = (0.80, 0.99)   # for SGD only
+    INNER_MOMENTUM_TAR_RANGE = (0.80, 0.99)   # For SGD only

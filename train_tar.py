@@ -17,9 +17,9 @@ from dotenv import load_dotenv
 from transformers import get_scheduler
 
 from parameters import Parameters
-from source.utils import get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model, cross_entropy_with_causal_shift_alignment, load_model
+from source.utils import get_optimizer, pad_tensor, compute_reference_hidden_states, capture_hidden_states, restore_model, cross_entropy_with_causal_shift_alignment, load_model, prepare_attack_batch
 from source.utils_lora import add_lora_adapters, mask_lora_gradients, apply_subspace_mask
-from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift
+from source.utils_log import probe_subspace_gradient_norms, probe_subspace_drift, log_inner_loss_trajectory
 from source.utils_datasets import get_tar_dataset
 from source.custom_batch_sampler import CustomBatchSampler
 from source.custom_data_collator import CustomDataCollator
@@ -50,7 +50,7 @@ class TARTrainer(Trainer):
         self.alpha = alpha
         self.beta = beta
         self.lora_init_weights = None
-        self.r_adv = getattr(Parameters, "RANK_ADVERSARY", 8)  # Subspace isolation
+        self.r_adv = Parameters.RANK_ADVERSARY
 
         self.beta_jb_ce = 1.0
         self.beta_jb_mse = 1.0
@@ -66,10 +66,16 @@ class TARTrainer(Trainer):
 
         self.micro_batch_size = Parameters.MICRO_BATCH_SIZE_TAR
 
+        self.inner_clip_threshold = Parameters.MAX_INNER_GRAD_NORM_TAR
+        self.meta_norm_threshold = Parameters.MAX_GRAD_NORM_META_TAR
+        self.outer_clip_threshold = Parameters.MAX_GRAD_NORM_TAR
+
         if Parameters.USE_ISOLATION:
-            self.inner_clip_threshold = Parameters.MAX_INNER_GRAD_NORM_TAR * Parameters.RANK_ADVERSARY / Parameters.LORA_RANK
-        else:
-            self.inner_clip_threshold = Parameters.MAX_INNER_GRAD_NORM_TAR
+            ratio_adv = Parameters.RANK_ADVERSARY / Parameters.LORA_RANK
+            ratio_def = (Parameters.LORA_RANK - Parameters.RANK_ADVERSARY) / Parameters.LORA_RANK
+            self.inner_clip_threshold *= ratio_adv
+            self.meta_norm_threshold *= ratio_def
+            self.outer_clip_threshold *= ratio_def
 
 
     def create_scheduler(self, num_training_steps: int, optimizer=None):
@@ -111,17 +117,6 @@ class TARTrainer(Trainer):
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
         )
-
-
-    def _save_lora_init(self, model):
-        first_param = next(model.parameters())
-        device = first_param.device
-
-        self.lora_init_weights = {
-            n: p.detach().clone().to(device)  # Enforce separation from the active parameter graph
-            for n, p in model.named_parameters()
-            if "lora" in n.lower() and p.requires_grad
-        }
 
     # ────────────────────────────────────────────────────────────────
     # _compute_stability_gradients
@@ -203,7 +198,9 @@ class TARTrainer(Trainer):
                 if "lora" in n.lower() and p.requires_grad:
                     diff_w = p - self.lora_init_weights[n].to(device)
                     # Subspace isolation
-                    _, active_elements = apply_subspace_mask(use_isolation=Parameters.USE_ISOLATION, name=n, tensor=diff_w, role="defender", r_adv=self.r_adv)
+                    _, active_elements = apply_subspace_mask(
+                        use_isolation=Parameters.USE_ISOLATION, name=n, tensor=diff_w, role="defender", r_adv=self.r_adv
+                    )
                     loss_stability_value += (active_elements ** 2).mean().item()
 
         return loss_stability_value
@@ -684,7 +681,7 @@ class TARTrainer(Trainer):
     def training_step(self, model, inputs, num_items_in_batch=None):
         model.train()
 
-        # Extract safety metadata before HF Trainer strips custom keys
+        # Extract safety metadata before Hugging Face's Trainer strips custom keys
         is_harmful_raw = inputs.get("is_harmful", None)
 
         inputs = self._prepare_inputs(inputs)  # Hugging Face default
@@ -701,7 +698,7 @@ class TARTrainer(Trainer):
 
         model.zero_grad()
 
-        # Retain loss
+        # [1] Retain loss
         saved_retain_gradients, loss_retain, loss_retain_value = self._compute_retain_gradients(model, inputs, harmful_mask)
 
         gc.collect()
@@ -710,22 +707,26 @@ class TARTrainer(Trainer):
         # Setup for meta-learning
         loss_tr_value = 0.0
         loss_stability_value = 0.0
-        meta_distance = 0.0  # Added to prevent NameError in the else path
+        meta_distance = 0.0
         saved_meta_gradients = {}
         saved_stability_gradients = {}
 
-        attack_batch = self._prepare_attack_batch(inputs, harmful_mask)
+        tokenizer_object = getattr(self, "processing_class", getattr(self, "tokenizer", None))
+        pad_token_id = tokenizer_object.pad_token_id if tokenizer_object else 0
+        attack_batch = prepare_attack_batch(inputs=inputs, harmful_mask=harmful_mask, pad_token_id=pad_token_id)
 
         backup_weights = {n: p.clone().detach().cpu() for n, p in model.named_parameters() if p.requires_grad}
 
-        # Inner loop attack & Live Streaming Meta-gradient evaluation
+        # [2] Inner loop attack & Live Streaming Meta-gradient evaluation
         inner_loss_trajectory, saved_meta_gradients, loss_tr_value = self._inner_loop_attack_and_meta_gradients(
-            model=model,
-            attack_batch=attack_batch,
+            model=model, attack_batch=attack_batch,
         )
 
         # (probe, post-inner): model is in attacked state
         outer_step = getattr(self.state, "global_step", 0)
+
+        log_inner_loss_trajectory(inner_loss_trajectory, outer_step)
+
         probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step)
 
         # (For logging only) Distance between the attacked model and the initial weights
@@ -735,18 +736,18 @@ class TARTrainer(Trainer):
         # (probe, post-restore): model is in outer-loop-accumulated state
         probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step)
 
-        # Stability loss
+        # [3] Stability loss
         if self.alpha > 0.0:
             saved_stability_gradients, loss_stability_value = self._compute_stability_gradients(model, device)
         else:
             saved_stability_gradients = {}
             loss_stability_value = self._compute_drift_only(model, device)
 
-        total_norm, clip_scale = self._apply_coalesced_gradients(
+        total_norm, clip_scale_meta = self._apply_coalesced_gradients(
             model=model,
             retain_gradients=saved_retain_gradients,
             meta_gradients=saved_meta_gradients,
-            stab_gradients=saved_stability_gradients,
+            stability_gradients=saved_stability_gradients,
         )
 
         del backup_weights, saved_retain_gradients, saved_meta_gradients, saved_stability_gradients
@@ -771,7 +772,7 @@ class TARTrainer(Trainer):
             f"inner start→end: {inner_loss_trajectory[0]:.3f} → {inner_loss_trajectory[-1]:.3f} | "
             f"meta_dist={meta_distance:.2f} | "
             f"total_norm={total_norm:.2f} | "
-            f"clip_scale={clip_scale:.2f}"
+            f"clip_scale_meta={clip_scale_meta:.2f}"
             "\u001b[0m"
         )
 
@@ -784,54 +785,18 @@ class TARTrainer(Trainer):
         return tracking_loss
 
 
-    def _prepare_attack_batch(self, inputs, harmful_mask):
-        raw_attack_ids = inputs["attack_input_ids"][harmful_mask]
-        raw_attack_mask = inputs["attack_attention_mask"][harmful_mask]
-        raw_attack_labels = inputs["attack_labels"][harmful_mask]
-
-        tokenizer_obj = getattr(self, "processing_class", getattr(self, "tokenizer", None))
-        pad_id = tokenizer_obj.pad_token_id if tokenizer_obj else 0
-
-        # Trim to the rightmost non-padding token across the batch
-        is_text_token = (raw_attack_ids != pad_id)
-        if is_text_token.any():
-            actual_max_len = int(torch.max(torch.nonzero(is_text_token)[:, 1]).item() + 1)
-        else:
-            actual_max_len = raw_attack_ids.shape[1]
-
-        attack_input_ids = raw_attack_ids[:, :actual_max_len].clone().contiguous()
-        attack_attention_mask = raw_attack_mask[:, :actual_max_len].clone().contiguous()
-        attack_labels = raw_attack_labels[:, :actual_max_len].clone().contiguous()
-        attack_labels[attack_labels == pad_id] = -100
-
-        # eval_* are currently identical to attack_*, we keep both names to respect the meta-learning conventions
-        return {
-            "attack_input_ids": attack_input_ids,
-            "attack_attention_mask": attack_attention_mask,
-            "attack_labels": attack_labels,
-            "eval_input_ids": attack_input_ids,
-            "eval_attention_mask": attack_attention_mask,
-            "eval_labels": attack_labels,
-        }
-
-
-    def _apply_coalesced_gradients(self, model, retain_gradients, meta_gradients, stab_gradients):
+    def _apply_coalesced_gradients(self, model, retain_gradients, meta_gradients, stability_gradients):
         """Coalesce gradient components and apply them to the model parameters"""
         total_norm = torch.tensor(0.0)
-        clip_scale = 1.0
+        clip_scale_meta = 1.0
 
         with torch.no_grad():
 
             # Per-component clip on meta gradients only — prevents overwhelming retain
             if meta_gradients:
                 meta_grad_list = list(meta_gradients.values())
-                total_norm = torch.linalg.vector_norm(torch.stack([g.norm() for g in meta_grad_list]))
-
-                if Parameters.USE_ISOLATION:
-                    meta_norm_threshold = Parameters.MAX_GRAD_NORM_META_TAR * (Parameters.LORA_RANK - Parameters.RANK_ADVERSARY) / Parameters.LORA_RANK
-                else:
-                    meta_norm_threshold = Parameters.MAX_GRAD_NORM_META_TAR
-                clip_scale = min(1.0, meta_norm_threshold / (total_norm + 1e-8))
+                meta_norm = torch.linalg.vector_norm(torch.stack([g.norm() for g in meta_grad_list]))
+                clip_scale_meta = min(1.0, self.meta_norm_threshold / (meta_norm + 1e-8))
 
             # Coalesce
             for n, p in model.named_parameters():
@@ -842,9 +807,9 @@ class TARTrainer(Trainer):
                 if n in retain_gradients:
                     p.grad.add_(retain_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
                 if n in meta_gradients:
-                    p.grad.add_(meta_gradients[n].to(p.grad.device, dtype=p.grad.dtype), alpha=(self.beta * clip_scale))
-                if n in stab_gradients:
-                    p.grad.add_(stab_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
+                    p.grad.add_(meta_gradients[n].to(p.grad.device, dtype=p.grad.dtype), alpha=(self.beta * clip_scale_meta))
+                if n in stability_gradients:
+                    p.grad.add_(stability_gradients[n].to(p.grad.device, dtype=p.grad.dtype))
 
             # Subspace isolation
             mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="defender", r_adv=self.r_adv)
@@ -854,14 +819,21 @@ class TARTrainer(Trainer):
             probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="outer", step=outer_step)
 
             # Unified clip on the full coalesced gradient
-            if Parameters.USE_ISOLATION:
-                max_grad_norm = Parameters.MAX_GRAD_NORM_TAR * (Parameters.LORA_RANK - Parameters.RANK_ADVERSARY) / Parameters.LORA_RANK
-            else:
-                max_grad_norm = Parameters.MAX_GRAD_NORM_TAR
-            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), self.outer_clip_threshold)
 
         # Returned values are for debug only
-        return total_norm, clip_scale
+        return total_norm, clip_scale_meta
+
+
+    def _save_lora_init(self, model):
+        first_param = next(model.parameters())
+        device = first_param.device  # TODO handle device
+
+        self.lora_init_weights = {
+            n: p.detach().clone().to(device)  # Enforce separation from the active parameter graph
+            for n, p in model.named_parameters()
+            if "lora" in n.lower() and p.requires_grad
+        }
 
 
     def _compute_meta_distance(self, model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]):

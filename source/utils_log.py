@@ -68,6 +68,21 @@ def probe_subspace_drift(
         }, step=step)
 
 
+def log_inner_loss_trajectory(inner_loss_trajectory: list[float], outer_step: int) -> None:
+
+    table_data = [[step_idx, loss_val] for step_idx, loss_val in enumerate(inner_loss_trajectory)]
+    trajectory_table = wandb.Table(data=table_data, columns=["Inner step", "Adversary loss"])
+    
+    wandb.log({
+        f"inner_loop_attacks/outer_step_{outer_step}": wandb.plot.line(
+            table=trajectory_table, 
+            x="Inner step", 
+            y="Adversary loss", 
+            title=f"Inner loop trajectory (Outer step {outer_step})"
+        ),
+    })
+
+
 def probe_subspace_gradient_norms(
     model: torch.nn.Module,
     r_adv: int,
