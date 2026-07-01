@@ -393,8 +393,10 @@ class TARTrainer(Trainer):
         for n, p in model.named_parameters():
             if p.requires_grad and p.grad is not None:
                 grad = p.grad.detach().clone()
-                if Parameters.USE_ISOLATION and "lora" in n.lower():
-                    grad, _ = apply_subspace_mask(use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)
+                if "lora" in n.lower():
+                    grad, _ = apply_subspace_mask(
+                        use_isolation=Parameters.USE_ISOLATION, name=n, tensor=grad, role="defender", r_adv=self.r_adv
+                    )
                 saved[n] = grad.cpu()
         return saved
 
@@ -523,7 +525,7 @@ class TARTrainer(Trainer):
 
         mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="adversary", r_adv=self.r_adv)
 
-        if inner_step == nb_inner_steps - 1:
+        if inner_step == nb_inner_steps - 1 and Parameters.USE_ISOLATION:
             outer_step = getattr(self.state, "global_step", 0)
             probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
 
@@ -586,14 +588,18 @@ class TARTrainer(Trainer):
 
         with torch.no_grad():
             for n, p in model.named_parameters():
-                if p.requires_grad and Parameters.USE_ISOLATION and "lora" in n.lower():
+                if p.requires_grad and "lora" in n.lower():
                     snapshot_lora_weights[n] = p.detach().clone().cpu()
-
-                    defender_snapshot, _ = apply_subspace_mask(
-                        use_isolation=True, name=n, tensor=snapshot_lora_weights[n].clone(), role="defender", r_adv=self.r_adv
-                    )
-                    adv_comp = adversary_components[n].to(p.device) if n in adversary_components else 0
-                    p.copy_(defender_snapshot.to(p.device) + adv_comp)
+                    if Parameters.USE_ISOLATION:
+                        defender_snapshot, _ = apply_subspace_mask(
+                            use_isolation=True,
+                            name=n,
+                            tensor=snapshot_lora_weights[n].clone(),
+                            role="defender",
+                            r_adv=self.r_adv
+                        )
+                        adv_comp = adversary_components[n].to(p.device) if n in adversary_components else 0
+                        p.copy_(defender_snapshot.to(p.device) + adv_comp)
 
         return snapshot_lora_weights
 
@@ -653,9 +659,9 @@ class TARTrainer(Trainer):
                     grad = p.grad.detach().clone()
                     if inv_scale != 1.0:
                         grad.mul_(inv_scale)
-                    if Parameters.USE_ISOLATION and "lora" in n.lower():
+                    if "lora" in n.lower():
                         grad, _ = apply_subspace_mask(
-                            use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv
+                            use_isolation=Parameters.USE_ISOLATION, name=n, tensor=grad, role="defender", r_adv=self.r_adv
                         )
                     grad_cpu = grad.cpu()
                     if n not in accumulated_gradients:
@@ -727,14 +733,21 @@ class TARTrainer(Trainer):
 
         log_inner_loss_trajectory(inner_loss_trajectory, outer_step)
 
-        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step)
+        if Parameters.USE_ISOLATION:
+            probe_subspace_drift(
+                model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step
+            )
 
         # (For logging only) Distance between the attacked model and the initial weights
         meta_distance = self._compute_meta_distance(model, backup_weights)
+        
+        # Restore
         restore_model(model, backup_weights)
 
-        # (probe, post-restore): model is in outer-loop-accumulated state
-        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step)
+        if Parameters.USE_ISOLATION:
+            probe_subspace_drift(
+                model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step
+            )
 
         # [3] Stability loss
         if self.alpha > 0.0:
@@ -814,9 +827,9 @@ class TARTrainer(Trainer):
             # Subspace isolation
             mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="defender", r_adv=self.r_adv)
 
-            # (probe, outer): probe immediately after masking (TODO for inspection, move it before the mask block)
-            outer_step = getattr(self.state, "global_step", 0)
-            probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="outer", step=outer_step)
+            if Parameters.USE_ISOLATION:
+                outer_step = getattr(self.state, "global_step", 0)
+                probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="outer", step=outer_step)
 
             # Unified clip on the full coalesced gradient
             total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), self.outer_clip_threshold)
