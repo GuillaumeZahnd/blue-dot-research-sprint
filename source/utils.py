@@ -121,6 +121,36 @@ def load_model_for_generation_OLD(model_path: Path, max_seq_length: int = 2048):
     return model, tokenizer
 
 
+def prepare_attack_batch(inputs, harmful_mask, pad_token_id):
+    """Trim and format the attack batch for meta-learning."""
+
+    raw_attack_ids = inputs["attack_input_ids"][harmful_mask]
+    raw_attack_mask = inputs["attack_attention_mask"][harmful_mask]
+    raw_attack_labels = inputs["attack_labels"][harmful_mask]
+
+    # Trim to the rightmost non-padding token across the batch
+    is_text_token = (raw_attack_ids != pad_token_id)
+    if is_text_token.any():
+        actual_max_len = int(torch.max(torch.nonzero(is_text_token)[:, 1]).item() + 1)
+    else:
+        actual_max_len = raw_attack_ids.shape[1]
+
+    attack_input_ids = raw_attack_ids[:, :actual_max_len].clone().contiguous()
+    attack_attention_mask = raw_attack_mask[:, :actual_max_len].clone().contiguous()
+    attack_labels = raw_attack_labels[:, :actual_max_len].clone().contiguous()
+    attack_labels[attack_labels == pad_token_id] = -100
+
+    # eval_* are currently identical to attack_*, we keep both names to respect the meta-learning conventions
+    return {
+        "attack_input_ids": attack_input_ids,
+        "attack_attention_mask": attack_attention_mask,
+        "attack_labels": attack_labels,
+        "eval_input_ids": attack_input_ids.clone(),
+        "eval_attention_mask": attack_attention_mask.clone(),
+        "eval_labels": attack_labels.clone(),
+    }
+
+
 def cross_entropy_with_causal_shift_alignment(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     """
     Compute cross-entropy loss with causal shift alignment.

@@ -11,6 +11,16 @@ from source.utils_datasets import setup_dataset
 from source.utils_lora import add_lora_adapters
 
 
+def _load_base_model(path_to_base_model: Path):
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=str(path_to_base_model),
+        max_seq_length=Parameters.MAX_SEQ_LENGTH,
+        dtype=Parameters.DTYPE,
+        load_in_4bit=Parameters.LOAD_IN_4_BITS,
+    )
+    return model, tokenizer
+
+
 if __name__ == "__main__":
 
     # ----------------------------------------------------------------
@@ -25,47 +35,35 @@ if __name__ == "__main__":
     os.environ["WANDB_PROJECT"] = "TAR-adversarial-supervised-fine-tuning"
 
     if target_model == "BASELINE":
-        # Load the base model
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
-            max_seq_length=Parameters.MAX_SEQ_LENGTH,
-            dtype=Parameters.DTYPE,
-            load_in_4bit=Parameters.LOAD_IN_4_BITS,
-        )
-        # Attach fresh LoRA adapters
-        model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK_AFT)
-        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR
-
+        path_to_base_model = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE
+        path_to_output_model = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_PRE_TAR
     elif target_model == "ABLITERATED":
-        # Load the base model
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED),
-            max_seq_length=Parameters.MAX_SEQ_LENGTH,
-            dtype=Parameters.DTYPE,
-            load_in_4bit=Parameters.LOAD_IN_4_BITS,
-        )
-        # Attach fresh LoRA adapters
-        model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK)
-        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR
-
+        path_to_base_model = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED
+        path_to_output_model = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_ABLITERATED_AFT_PRE_TAR
     elif target_model == "TAR":
-        # Load the base model
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE),
-            max_seq_length=Parameters.MAX_SEQ_LENGTH,
-            dtype=Parameters.DTYPE,
-            load_in_4bit=Parameters.LOAD_IN_4_BITS,
-        )
+        path_to_base_model = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_BASELINE
+        path_to_output_model = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_POST_TAR
+    else:
+        raise ValueError(f"Invalid target: {target_model}.")
+
+
+    # Load the base model
+    model, tokenizer = _load_base_model(path_to_base_model=path_to_base_model)
+
+    if target_model == "TAR":
+
         # Attach the trained TAR adapters and make them trainable for the attack
         model = PeftModel.from_pretrained(
             model,
             str(Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_TAR),
-            is_trainable=True
+            is_trainable=False
         )
-        output_model_path = Parameters.PATH_TO_MODELS / Parameters.MODEL_NAME_AFT_POST_TAR
+        # In-memory merge
+        model = model.merge_and_unload()
 
-    else:
-        raise ValueError(f"Invalid target: {target_model}.")
+    # Attach fresh LoRA adapters
+    model = add_lora_adapters(model=model, seed=Parameters.SEED, lora_rank=Parameters.LORA_RANK_AFT)
+
 
     FastLanguageModel.for_training(model)
 
@@ -105,7 +103,7 @@ if __name__ == "__main__":
         report_to=Parameters.REPORT_TO,
         logging_strategy="steps",
         logging_steps=1,
-    )       
+    )
 
     trainer = SFTTrainer(
         model=model,
@@ -121,7 +119,7 @@ if __name__ == "__main__":
     trainer.train()
 
     # Save only the model adapter (will need the base model when loading)
-    model.save_pretrained(str(output_model_path))
-    tokenizer.save_pretrained(str(output_model_path))
+    model.save_pretrained(str(path_to_output_model))
+    tokenizer.save_pretrained(str(path_to_output_model))
 
-    print(f"Model saved to: {output_model_path}")
+    print(f"Model saved to: {path_to_output_model}")
