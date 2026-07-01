@@ -57,26 +57,19 @@ class TARTrainer(Trainer):
 
         trainable_parameters = [p for p in self.model.parameters() if p.requires_grad]
 
-        self.inner_optimizer_sgd = get_optimizer(
-            optimizer_name="SGD",
+        self.inner_optimizer = get_optimizer(
+            optimizer_name=Parameters.OPTIM_INNER_TAR,
             trainable_parameters=trainable_parameters,
             learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
             momentum=Parameters.INNER_MOMENTUM_TAR
         )
 
-        self.inner_optimizer_adamw = get_optimizer(
-            optimizer_name="ADAMW",
-            trainable_parameters=trainable_parameters,
-            learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
-            momentum=None
-        )
-        
-        self.inner_optimizer_adamw_8bits = get_optimizer(
-            optimizer_name="ADAMW_8BITS",
-            trainable_parameters=trainable_parameters,
-            learning_rate=Parameters.LEARNING_RATE_INNER_TAR,
-            momentum=None
-        )        
+        self.micro_batch_size = Parameters.MICRO_BATCH_SIZE_TAR
+
+        if Parameters.USE_ISOLATION:
+            self.inner_clip_threshold = Parameters.MAX_INNER_GRAD_NORM_TAR * Parameters.RANK_ADVERSARY / Parameters.LORA_RANK
+        else:
+            self.inner_clip_threshold = Parameters.MAX_INNER_GRAD_NORM_TAR
 
 
     def create_scheduler(self, num_training_steps: int, optimizer=None):
@@ -174,7 +167,7 @@ class TARTrainer(Trainer):
                     else:
                         grad_dir = torch.zeros_like(diff_w)
 
-                    saved_stability_gradients[n] = self.alpha * grad_dir
+                    saved_stability_gradients[n] = (self.alpha * grad_dir).cpu()
                 loss_stability_value = torch.stack(norms).mean().item()
 
         # Proportional to drift (Sum of squared L2 norms)
@@ -193,7 +186,7 @@ class TARTrainer(Trainer):
                         r_adv=self.r_adv
                     )
 
-                    saved_stability_gradients[n] = self.alpha * 2.0 * diff_w
+                    saved_stability_gradients[n] = (self.alpha * 2.0 * diff_w).cpu()
                     loss_stability_value += (active_elements ** 2).mean().item()
 
         return saved_stability_gradients, loss_stability_value
@@ -405,98 +398,391 @@ class TARTrainer(Trainer):
                 grad = p.grad.detach().clone()
                 if Parameters.USE_ISOLATION and "lora" in n.lower():
                     grad, _ = apply_subspace_mask(use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)
-                saved[n] = grad
+                saved[n] = grad.cpu()
         return saved
 
     # ────────────────────────────────────────────────────────────────
-    # _inner_loop_attack
+    # _inner_loop_attack_and_meta_gradients
     # ────────────────────────────────────────────────────────────────
 
-    def _inner_loop_attack(self, model, attack_batch):
+    def _inner_loop_attack_and_meta_gradients(self, model, attack_batch):
+        """Run the full FOMAML-style inner loop: repeatedly attack the
+        model, periodically snapshot the defender's isolated subspace,
+        evaluate an entropy-based objective on it, and accumulate the
+        resulting meta-gradients.
+
+        Returns:
+            (inner_loss_trajectory, accumulated_gradients, avg_entropy)
+        """
         trainable_parameters = [p for p in model.parameters() if p.requires_grad]
 
-        if not Parameters.VARIABLE_ADVERSARY:
-            if Parameters.OPTIM_INNER_TAR == "SGD":
-               inner_optimizer = self.inner_optimizer_sgd
-            if Parameters.OPTIM_INNER_TAR == "ADAMW":
-               inner_optimizer = self.inner_optimizer_adamw
-            if Parameters.OPTIM_INNER_TAR == "ADAMW_8BITS":
-               inner_optimizer = self.inner_optimizer_adamw_8bits               
-            nb_inner_steps = Parameters.NB_INNER_STEPS_TAR
+        nb_inner_steps = Parameters.NB_INNER_STEPS_TAR
+        self._reset_inner_optimizer_state()
 
-        else:
-            inner_optimizer_flavor = random.choice(Parameters.OPTIM_INNER_TAR_CHOICES)
-            if inner_optimizer_flavor == "SGD":
-               inner_optimizer = self.inner_optimizer_sgd
-            if inner_optimizer_flavor == "ADAMW":
-               inner_optimizer = self.inner_optimizer_adamw
-            if Parameters.OPTIM_INNER_TAR == "ADAMW_8BITS":
-               inner_optimizer = self.inner_optimizer_adamw_8bits                  
+        gc.collect()
+        torch.cuda.empty_cache()
 
-            lr = random.uniform(Parameters.LEARNING_RATE_INNER_TAR_RANGE[0], Parameters.LEARNING_RATE_INNER_TAR_RANGE[1])
-            momentum = random.uniform(Parameters.INNER_MOMENTUM_TAR_RANGE[0], Parameters.INNER_MOMENTUM_TAR_RANGE[1])
-            for param_group in inner_optimizer.param_groups:
-                param_group["lr"] = lr
-                if "momentum" in param_group:
-                    param_group["momentum"] = momentum
-            nb_inner_steps = random.randint(Parameters.NB_INNER_STEPS_MIN_TAR, Parameters.NB_INNER_STEPS_MAX_TAR)
+        eval_input_ids = attack_batch["eval_input_ids"]
+        eval_attention_mask = attack_batch["eval_attention_mask"]
+        eval_labels = attack_batch["eval_labels"]
+        batch_size = eval_input_ids.shape[0]
 
-        inner_optimizer.state.clear()
+        shift_labels_full = eval_labels[..., 1:].contiguous()
+        global_valid_tokens = max((shift_labels_full != -100).float().sum().item(), 1.0)
 
-        loss_inner_loop_start = None
-        loss_inner_loop_end = None
-        trajectory_snapshots = []
+        adversary_components = self._precompute_adversary_components(model)
+
         inner_loss_trajectory = []
-        
+        accumulated_gradients = {}
+        sum_entropy = 0.0
+        nb_snapshots = 0
+
         for inner_step in range(nb_inner_steps):
-            model.zero_grad()
+            inner_loss_value = self._run_inner_step(
+                model, attack_batch, trainable_parameters, inner_step, nb_inner_steps
+            )
+            inner_loss_trajectory.append(inner_loss_value)
+
+            if (inner_step + 1) % Parameters.TRAJECTORY_SUBSAMPLE_EVERY_TAR == 0:
+                nb_snapshots += 1
+                snapshot_entropy = self._take_defender_snapshot_and_accumulate_gradients(
+                    model,
+                    eval_input_ids,
+                    eval_attention_mask,
+                    eval_labels,
+                    batch_size,
+                    adversary_components,
+                    global_valid_tokens,
+                    accumulated_gradients,
+                )
+                sum_entropy += snapshot_entropy
+
+        if nb_snapshots > 0:
+            for n in accumulated_gradients:
+                accumulated_gradients[n].div_(nb_snapshots)
+
+        avg_entropy = sum_entropy / max(nb_snapshots, 1)
+
+        return inner_loss_trajectory, accumulated_gradients, avg_entropy
+
+
+    def _reset_inner_optimizer_state(self):
+        """Zero out any persisted Adam-style moment buffers / step counters so each outer step starts the inner loop from a clean slate."""
+        with torch.no_grad():
+            for group in self.inner_optimizer.param_groups:
+                for p in group["params"]:
+                    if p not in self.inner_optimizer.state:
+                        continue
+                    state = self.inner_optimizer.state[p]
+                    if state.get("exp_avg") is not None:
+                        state["exp_avg"].zero_()
+                    if state.get("exp_avg_sq") is not None:
+                        state["exp_avg_sq"].zero_()
+                    if "step" in state:
+                        if isinstance(state["step"], torch.Tensor):
+                            state["step"].fill_(0)
+                        else:
+                            state["step"] = 0
+
+
+    def _precompute_adversary_components(self, model):
+        """Snapshot the adversary-subspace component of each LoRA param at
+        its INITIAL value (before any inner steps), offloaded to CPU. This
+        is added back during defender-only eval snapshots so the eval
+        forward pass sees "defender's current weights + adversary's
+        original weights", not a moving adversary target.
+        """
+        adversary_components = {}
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if p.requires_grad and Parameters.USE_ISOLATION and "lora" in n.lower():
+                    p_clone = p.detach().clone().cpu()
+                    adversary_current, _ = apply_subspace_mask(
+                        use_isolation=True, name=n, tensor=p_clone, role="adversary", r_adv=self.r_adv
+                    )
+                    adversary_components[n] = adversary_current.cpu()
+        return adversary_components
+
+
+    def _run_inner_step(self, model, attack_batch, trainable_parameters, inner_step, nb_inner_steps):
+        """Run a single inner-loop step of the tamper attack: forward pass
+        on the attack batch, backward, mask gradients to the adversary
+        subspace, clip, and step the inner optimizer.
+
+        Returns the scalar inner loss value for this step.
+        """
+        model.zero_grad()
+
+        with torch.enable_grad():
             outputs = model(
                 input_ids=attack_batch["attack_input_ids"],
                 attention_mask=attack_batch["attack_attention_mask"],
-                labels=attack_batch["attack_labels"]
+                labels=attack_batch["attack_labels"],
             )
             inner_loss = outputs.loss
-            inner_loss_trajectory.append(inner_loss.item())  # TODO reproduce Figure 3 of Tamirisa et al.
-
-            # Capture start loss
-            if inner_step == 0:
-                loss_inner_loop_start = inner_loss.item()
+            inner_loss_value = inner_loss.item()
 
             self.accelerator.backward(inner_loss)
 
-            # Subspace isolation
-            mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="adversary", r_adv=self.r_adv)
+        mask_lora_gradients(use_isolation=Parameters.USE_ISOLATION, model=model, role="adversary", r_adv=self.r_adv)
 
-            # (probe, inner): probe immediately after masking, last step only  (TODO for inspection, move it befor the mask block)
-            if inner_step == nb_inner_steps - 1:
-                outer_step = getattr(self.state, "global_step", 0)
-                probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
+        if inner_step == nb_inner_steps - 1:
+            outer_step = getattr(self.state, "global_step", 0)
+            probe_subspace_gradient_norms(model, r_adv=self.r_adv, stage="inner", step=outer_step)
 
-            if Parameters.USE_ISOLATION:
-                inner_clip = Parameters.MAX_INNER_GRAD_NORM_TAR * Parameters.RANK_ADVERSARY / Parameters.LORA_RANK
-            else:
-                inner_clip = Parameters.MAX_INNER_GRAD_NORM_TAR
-            torch.nn.utils.clip_grad_norm_(trainable_parameters, inner_clip)
+        torch.nn.utils.clip_grad_norm_(trainable_parameters, self.inner_clip_threshold)
 
-            inner_optimizer.step()
+        self.inner_optimizer.step()
 
-            # Capture end loss on the final step
-            if inner_step == nb_inner_steps - 1:
-                loss_inner_loop_end = inner_loss.item()
+        del outputs, inner_loss
+        return inner_loss_value
 
-            del outputs, inner_loss
 
-            # Snapshot LoRA weights at subsampled steps
-            if (inner_step + 1) % Parameters.TRAJECTORY_SUBSAMPLE_EVERY_TAR == 0:
-                trajectory_snapshots.append({
-                    n: p.detach().clone().cpu()  # Offload the GPU VRAM to avoid OOM issues
-                    for n, p in model.named_parameters()
-                    if p.requires_grad
-                })
+    def _take_defender_snapshot_and_accumulate_gradients(
+        self,
+        model,
+        eval_input_ids,
+        eval_attention_mask,
+        eval_labels,
+        batch_size,
+        adversary_components,
+        global_valid_tokens,
+        accumulated_gradients,
+    ):
+        """One full trajectory snapshot: temporarily apply defender-only
+        weights, evaluate + backward the entropy loss, accumulate the
+        resulting meta-gradients, then restore the model's real weights.
 
-        return loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots
+        Returns this snapshot's mean token entropy (normalized by
+        global_valid_tokens).
+        """
+        snapshot_lora_weights = self._apply_defender_only_weights(model, adversary_components)
+
+        model.zero_grad()
+        snapshot_entropy_sum = self._evaluate_entropy_loss_and_backward(
+            model, eval_input_ids, eval_attention_mask, eval_labels, batch_size, global_valid_tokens
+        )
+
+        self._accumulate_defender_gradients(model, accumulated_gradients)
+
+        model.zero_grad()
+        self._restore_weights(model, snapshot_lora_weights)
+
+        del snapshot_lora_weights
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return snapshot_entropy_sum / global_valid_tokens
+
+
+    def _apply_defender_only_weights(self, model, adversary_components):
+        """Temporarily overwrite each LoRA param in-place with
+        (current defender subspace) + (originally precomputed adversary
+        subspace), so the eval forward pass reflects the defender's
+        isolated view rather than the adversary's live-attacked weights.
+
+        Returns a CPU snapshot of the pre-swap LoRA weights, to be restored
+        later via `_restore_weights`. Only LoRA params are snapshotted since
+        those are the only ones this function mutates.
+        """
+        snapshot_lora_weights = {}
+
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if p.requires_grad and Parameters.USE_ISOLATION and "lora" in n.lower():
+                    snapshot_lora_weights[n] = p.detach().clone().cpu()
+
+                    defender_snapshot, _ = apply_subspace_mask(
+                        use_isolation=True, name=n, tensor=snapshot_lora_weights[n].clone(), role="defender", r_adv=self.r_adv
+                    )
+                    adv_comp = adversary_components[n].to(p.device) if n in adversary_components else 0
+                    p.copy_(defender_snapshot.to(p.device) + adv_comp)
+
+        return snapshot_lora_weights
+
+
+    def _evaluate_entropy_loss_and_backward(
+        self, model, eval_input_ids, eval_attention_mask, eval_labels, batch_size, global_valid_tokens
+    ):
+        """Run the streaming-entropy evaluation forward/backward pass over
+        the eval set in micro-batches (defender-only weights are assumed
+        to already be applied). Backward populates `.grad` on model params,
+        which the caller accumulates as meta-gradients afterward.
+
+        Returns the (unnormalized) sum of token entropy over the eval set.
+        """
+        snapshot_entropy_sum = 0.0
+
+        with torch.enable_grad():
+            for j in range(0, batch_size, self.micro_batch_size):
+                chunk_ids = eval_input_ids[j : j + self.micro_batch_size]
+                chunk_mask = eval_attention_mask[j : j + self.micro_batch_size]
+                chunk_labels = eval_labels[j : j + self.micro_batch_size]
+
+                outputs = model(input_ids=chunk_ids, attention_mask=chunk_mask)
+                logits = outputs.logits
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = chunk_labels[..., 1:].contiguous()
+
+                log_probs = F.log_softmax(shift_logits, dim=-1)
+                probs = F.softmax(shift_logits, dim=-1)
+                entropy = -torch.sum(probs * log_probs, dim=-1)
+
+                valid_mask = (shift_labels != -100).float()
+                chunk_entropy_sum = (entropy * valid_mask).sum()
+                snapshot_entropy_sum += chunk_entropy_sum.item()
+
+                loss_tr = -chunk_entropy_sum / global_valid_tokens
+                self.accelerator.backward(loss_tr)
+
+                del outputs, logits, shift_logits, shift_labels, log_probs, probs, entropy, loss_tr, chunk_entropy_sum
+
+        return snapshot_entropy_sum
+
+
+    def _accumulate_defender_gradients(self, model, accumulated_gradients):
+        """Read `.grad` off each trainable param after the entropy
+        eval backward pass, project to the defender subspace, and add it
+        (on CPU) into the running `accumulated_gradients` buffer.
+
+        Mutates `accumulated_gradients` in place.
+        """
+        scaler = getattr(self.accelerator, "scaler", None)
+        inv_scale = 1.0 / scaler.get_scale() if scaler is not None else 1.0
+
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if p.requires_grad and p.grad is not None:
+                    grad = p.grad.detach().clone()
+                    if inv_scale != 1.0:
+                        grad.mul_(inv_scale)
+                    if Parameters.USE_ISOLATION and "lora" in n.lower():
+                        grad, _ = apply_subspace_mask(
+                            use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv
+                        )
+                    grad_cpu = grad.cpu()
+                    if n not in accumulated_gradients:
+                        accumulated_gradients[n] = grad_cpu
+                    else:
+                        accumulated_gradients[n].add_(grad_cpu)
+
+
+    def _restore_weights(self, model, snapshot_lora_weights):
+        """Undo `_apply_defender_only_weights`, putting the model's LoRA
+        params back to their actual (adversary-attacked) state before the
+        inner loop continues. Only LoRA params were snapshotted/mutated, so
+        only those are restored."""
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if n in snapshot_lora_weights:
+                    p.copy_(snapshot_lora_weights[n].to(p.device))
 
     # ────────────────────────────────────────────────────────────────
+    # training_step
+    # ────────────────────────────────────────────────────────────────
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        model.train()
+
+        # Extract safety metadata before HF Trainer strips custom keys
+        is_harmful_raw = inputs.get("is_harmful", None)
+
+        inputs = self._prepare_inputs(inputs)  # Hugging Face default
+        device = inputs["input_ids"].device
+
+        if self.lora_init_weights is None:
+            self._save_lora_init(model)
+
+        harmful_mask = self._get_harmful_mask(is_harmful_raw=is_harmful_raw, inputs=inputs, device=device)
+        self._log_some_samples(inputs, harmful_mask)
+
+        self.jailbreak_input_ids = inputs.get("jailbreak_input_ids", None)
+        self.jailbreak_attention_mask = inputs.get("jailbreak_attention_mask", None)
+
+        model.zero_grad()
+
+        # Retain loss
+        saved_retain_gradients, loss_retain, loss_retain_value = self._compute_retain_gradients(model, inputs, harmful_mask)
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # Setup for meta-learning
+        loss_tr_value = 0.0
+        loss_stability_value = 0.0
+        meta_distance = 0.0  # Added to prevent NameError in the else path
+        saved_meta_gradients = {}
+        saved_stability_gradients = {}
+
+        attack_batch = self._prepare_attack_batch(inputs, harmful_mask)
+
+        backup_weights = {n: p.clone().detach().cpu() for n, p in model.named_parameters() if p.requires_grad}
+
+        # Inner loop attack & Live Streaming Meta-gradient evaluation
+        inner_loss_trajectory, saved_meta_gradients, loss_tr_value = self._inner_loop_attack_and_meta_gradients(
+            model=model,
+            attack_batch=attack_batch,
+        )
+
+        # (probe, post-inner): model is in attacked state
+        outer_step = getattr(self.state, "global_step", 0)
+        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step)
+
+        # (For logging only) Distance between the attacked model and the initial weights
+        meta_distance = self._compute_meta_distance(model, backup_weights)
+        restore_model(model, backup_weights)
+
+        # (probe, post-restore): model is in outer-loop-accumulated state
+        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step)
+
+        # Stability loss
+        if self.alpha > 0.0:
+            saved_stability_gradients, loss_stability_value = self._compute_stability_gradients(model, device)
+        else:
+            saved_stability_gradients = {}
+            loss_stability_value = self._compute_drift_only(model, device)
+
+        total_norm, clip_scale = self._apply_coalesced_gradients(
+            model=model,
+            retain_gradients=saved_retain_gradients,
+            meta_gradients=saved_meta_gradients,
+            stab_gradients=saved_stability_gradients,
+        )
+
+        del backup_weights, saved_retain_gradients, saved_meta_gradients, saved_stability_gradients
+        gc.collect()
+
+        # <For interpretation>
+        check_nb_harmful = int(harmful_mask.sum().item())
+        check_nb_harmless = inputs["input_ids"].shape[0] - check_nb_harmful
+
+        vocab_size = getattr(model.config, "vocab_size", 32000)
+        max_entropy = math.log(vocab_size)
+        entropy_efficiency = loss_tr_value / max_entropy
+        #</>
+
+        tqdm.write(
+            "\u001b[33m"
+            f"[{check_nb_harmful}/{check_nb_harmless}] "
+            f"retain={loss_retain_value:.2f} | "
+            f"tr={loss_tr_value:.2f} | "
+            f"tr_eff={entropy_efficiency:.3f} | "
+            f"stabi={loss_stability_value:.6f} | "
+            f"inner start→end: {inner_loss_trajectory[0]:.3f} → {inner_loss_trajectory[-1]:.3f} | "
+            f"meta_dist={meta_distance:.2f} | "
+            f"total_norm={total_norm:.2f} | "
+            f"clip_scale={clip_scale:.2f}"
+            "\u001b[0m"
+        )
+
+        clean_metric_scalar = loss_retain.item() + loss_tr_value + loss_stability_value
+
+        # Create a tiny 1-node computational graph instead of linking the full LLM graph
+        dummy_grad_tensor = (next(model.parameters()) * 0.0).sum()
+        tracking_loss = dummy_grad_tensor + clean_metric_scalar
+
+        return tracking_loss
+
 
     def _prepare_attack_batch(self, inputs, harmful_mask):
         raw_attack_ids = inputs["attack_input_ids"][harmful_mask]
@@ -577,249 +863,11 @@ class TARTrainer(Trainer):
         # Returned values are for debug only
         return total_norm, clip_scale
 
-    # ────────────────────────────────────────────────────────────────
-    # _compute_meta_gradients
-    # ────────────────────────────────────────────────────────────────
-
-    def _compute_meta_gradients(
-        self,
-        model: torch.nn.Module,
-        attack_batch: dict[str, torch.Tensor],
-        trajectory_snapshots: list[dict[str, torch.Tensor]],
-        micro_batch_size: int
-    ) -> tuple[dict[str, torch.Tensor], float]:
-        """
-        Compute average meta-gradients minimizing negative token entropy over trajectory snapshots.
-
-        Args:
-            model: Language model to optimize
-            attack_batch: Dictionary containing evaluation inputs, attention masks, and labels.
-            trajectory_snapshots: List of model state dictionaries sampled during training.
-            micro_batch_size: Step size for batch chunking to avoid memory exhaustion.
-
-        Returns:
-            Dictionary mapping parameter names to averaged accumulated meta-gradients.
-            Average normalized entropy value across all snapshots.
-        """
-        torch.set_grad_enabled(True)
-
-        accumulated_gradients = {}
-        sum_entropy = 0.0
-        nb_snapshots = len(trajectory_snapshots)
-
-        eval_input_ids = attack_batch["eval_input_ids"]
-        eval_attention_mask = attack_batch["eval_attention_mask"]
-        eval_labels = attack_batch["eval_labels"]
-        batch_size = eval_input_ids.shape[0]
-
-        # Global token normalization factor calculated upfront
-        shift_labels_full = eval_labels[..., 1:].contiguous()
-        global_valid_tokens = (shift_labels_full != -100).float().sum().item()
-        global_valid_tokens = max(global_valid_tokens, 1.0)
-
-        # Backup initial weights for restoration, and pre-compute the adversary component
-        initial_weights = {}
-        adversary_components = {}
-        with torch.no_grad():
-            for n, p in model.named_parameters():
-                if p.requires_grad:
-                    initial_weights[n] = p.clone().detach()
-                    if Parameters.USE_ISOLATION and "lora" in n.lower():
-                        p_clone = p.clone()
-                        adversary_current, _ = apply_subspace_mask(
-                            use_isolation=True, name=n, tensor=p_clone, role="adversary", r_adv=self.r_adv
-                        )
-                        adversary_components[n] = adversary_current
-
-        for snapshot in trajectory_snapshots:
-            with torch.no_grad():
-                for n, p in model.named_parameters():
-                    if p.requires_grad and n in snapshot:
-                        if Parameters.USE_ISOLATION and "lora" in n.lower():
-                            snapshot_clone = snapshot[n].clone()
-                            defender_snapshot, _ = apply_subspace_mask(
-                                use_isolation=True, name=n, tensor=snapshot_clone, role="defender", r_adv=self.r_adv
-                            )
-                            p.copy_(defender_snapshot.to(p.device) + adversary_components[n])  # Move back from CPU to GPU
-                        else:
-                            p.copy_(snapshot[n])
-
-            snapshot_entropy_sum = 0.0
-
-            for j in range(0, batch_size, micro_batch_size):
-                chunk_ids = eval_input_ids[j : j + micro_batch_size]
-                chunk_mask = eval_attention_mask[j : j + micro_batch_size]
-                chunk_labels = eval_labels[j : j + micro_batch_size]
-
-                outputs = model(input_ids=chunk_ids, attention_mask=chunk_mask)
-
-                logits = outputs.logits
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = chunk_labels[..., 1:].contiguous()
-
-                log_probs = F.log_softmax(shift_logits, dim=-1)
-                probs = F.softmax(shift_logits, dim=-1)
-                entropy = -torch.sum(probs * log_probs, dim=-1)
-
-                valid_mask = (shift_labels != -100).float()
-                chunk_entropy_sum = (entropy * valid_mask).sum()
-                snapshot_entropy_sum += chunk_entropy_sum.item()
-
-                # Scale by global tokens to keep gradients mathematically exact
-                loss_tr = -chunk_entropy_sum / global_valid_tokens
-                self.accelerator.backward(loss_tr)
-
-                del outputs, logits, shift_logits, shift_labels, log_probs, probs, entropy, loss_tr, chunk_entropy_sum
-
-            sum_entropy += (snapshot_entropy_sum / global_valid_tokens)
-
-            with torch.no_grad():
-                for n, p in model.named_parameters():
-                    if p.requires_grad and p.grad is not None:
-                        grad = p.grad.detach().clone()
-
-                        # Mask to defender subspace immediately
-                        if Parameters.USE_ISOLATION and "lora" in n.lower():
-                            grad, _ = apply_subspace_mask(
-                                use_isolation=True, name=n, tensor=grad, role="defender", r_adv=self.r_adv)
-
-                        if n not in accumulated_gradients:
-                            accumulated_gradients[n] = grad
-                        else:
-                            accumulated_gradients[n].add_(grad)
-
-            model.zero_grad()
-
-        # Restore model parameters back to their initial state
-        with torch.no_grad():
-            for n, p in model.named_parameters():
-                if p.requires_grad and n in initial_weights:
-                    p.copy_(initial_weights[n])
-
-        if nb_snapshots > 0:
-            for n in accumulated_gradients:
-                accumulated_gradients[n].div_(nb_snapshots)
-
-        avg_entropy = sum_entropy / max(nb_snapshots, 1)
-        return accumulated_gradients, avg_entropy
-
-    # ────────────────────────────────────────────────────────────────
-    # training_step
-    # ────────────────────────────────────────────────────────────────
-
-    def training_step(self, model, inputs, num_items_in_batch=None):
-        model.train()
-
-        # Extract safety metadata before HF Trainer strips custom keys
-        is_harmful_raw = inputs.get("is_harmful", None)
-
-        inputs = self._prepare_inputs(inputs)  # Hugging Face default
-        device = inputs["input_ids"].device
-
-        if self.lora_init_weights is None:
-            self._save_lora_init(model)
-
-        harmful_mask = self._get_harmful_mask(is_harmful_raw=is_harmful_raw, inputs=inputs, device=device)
-        self._log_some_samples(inputs, harmful_mask)
-
-        self.jailbreak_input_ids = inputs.get("jailbreak_input_ids", None)
-        self.jailbreak_attention_mask = inputs.get("jailbreak_attention_mask", None)
-
-        model.zero_grad()
-
-        # Retain loss
-        saved_retain_gradients, loss_retain, loss_retain_value = self._compute_retain_gradients(model, inputs, harmful_mask)
-
-        # Setup for meta-learning
-        loss_tr_value = 0.0
-        loss_stability_value = 0.0
-        loss_inner_loop_start = 0.0
-        loss_inner_loop_end = 0.0
-        meta_distance = 0.0  # Added to prevent NameError in the else path
-        saved_meta_gradients = {}
-        saved_stability_gradients = {}
-
-        attack_batch = self._prepare_attack_batch(inputs, harmful_mask)
-
-        backup_weights = {n: p.clone().detach() for n, p in model.named_parameters() if p.requires_grad}
-
-        # Inner loop attack
-        loss_inner_loop_start, loss_inner_loop_end, trajectory_snapshots = self._inner_loop_attack(model, attack_batch)
-
-        # (probe, post-inner): model is in attacked state
-        outer_step = getattr(self.state, "global_step", 0)
-        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_inner", step=outer_step)
-
-        # Adversarial attack
-        model.zero_grad()  # Must precede the call to "_compute_meta_gradients"
-        saved_meta_gradients, loss_tr_value = self._compute_meta_gradients(
-            model=model,
-            attack_batch=attack_batch,
-            trajectory_snapshots=trajectory_snapshots,
-            micro_batch_size=Parameters.MICRO_BATCH_SIZE_TAR
-        )
-
-        # (For logging only) Distance between the attacked model and the initial weights -- Placed before "restore_model"
-        meta_distance = self._compute_meta_distance(model, backup_weights)
-        restore_model(model, backup_weights)
-
-        # (probe, post-restore): model is in outer-loop-accumulated state
-        outer_step = getattr(self.state, "global_step", 0)
-        probe_subspace_drift(model, r_adv=self.r_adv, lora_init_weights=self.lora_init_weights, stage="post_restore", step=outer_step)
-
-        # Stability loss
-        if self.alpha > 0.0:
-            saved_stability_gradients, loss_stability_value = self._compute_stability_gradients(model, device)
-        else:
-            saved_stability_gradients = {}
-            loss_stability_value = self._compute_drift_only(model, device)
-
-        total_norm, clip_scale = self._apply_coalesced_gradients(
-            model=model,
-            retain_gradients=saved_retain_gradients,
-            meta_gradients=saved_meta_gradients,
-            stab_gradients=saved_stability_gradients,
-        )
-
-        del backup_weights, saved_retain_gradients, saved_meta_gradients, saved_stability_gradients, trajectory_snapshots
-        gc.collect()
-
-        # <For interpretation>
-        check_nb_harmful = int(harmful_mask.sum().item())
-        check_nb_harmless = inputs["input_ids"].shape[0] - check_nb_harmful
-
-        vocab_size = getattr(model.config, "vocab_size", 32000)
-        max_entropy = math.log(vocab_size)
-        entropy_efficiency = loss_tr_value / max_entropy
-        #</>
-
-        tqdm.write(
-            "\u001b[33m"
-            f"[{check_nb_harmful}/{check_nb_harmless}] "
-            f"retain={loss_retain_value:.2f} | "
-            f"tr={loss_tr_value:.2f} | "
-            f"tr_eff={entropy_efficiency:.3f} | "
-            f"stabi={loss_stability_value:.6f} | "
-            f"inner start→end: {loss_inner_loop_start:.3f} → {loss_inner_loop_end:.3f} | "
-            f"meta_dist={meta_distance:.2f} | "
-            f"total_norm={total_norm:.2f} | "
-            f"clip_scale={clip_scale:.2f}"
-            "\u001b[0m"
-        )
-
-        clean_metric_scalar = loss_retain.item() + loss_tr_value + loss_stability_value
-
-        # Create a tiny 1-node computational graph instead of linking the full LLM graph
-        dummy_grad_tensor = (next(model.parameters()) * 0.0).sum()
-        tracking_loss = dummy_grad_tensor + clean_metric_scalar
-
-        return tracking_loss
-
 
     def _compute_meta_distance(self, model: torch.nn.Module, backup_weights: dict[str, torch.Tensor]):
         """Compute the L2 distance between current model parameters and backed-up weights."""
         with torch.no_grad():
-            dist_list = [(p - backup_weights[n]).norm(2) for n, p in model.named_parameters() if p.requires_grad]
+            dist_list = [(p - backup_weights[n].to(p.device)).norm(2) for n, p in model.named_parameters() if p.requires_grad]
             return torch.stack(dist_list).norm(2).item()
 
 
@@ -900,7 +948,7 @@ if __name__ == "__main__":
         gradient_accumulation_steps=Parameters.GRADIENT_ACCUMULATION_STEPS_TAR,
         optim=Parameters.OPTIM_TAR,
         remove_unused_columns=False,
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,  # trades a minor computational overhead to recompute activations during the backward pass instead of caching all intermediate activations in VRAM, which drastically reduces the peak memory footprint.
         report_to=Parameters.REPORT_TO,
         logging_strategy="steps",
         logging_steps=1,

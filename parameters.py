@@ -57,7 +57,7 @@ class Parameters:
     BATCH_SIZE_AFT = 4
     GRADIENT_ACCUMULATION_STEPS_AFT = 8
     OPTIM_AFT = "adamw_torch"  # ["adamw_torch", "sgd"]
-    LEARNING_RATE_AFT = 2e-4
+    LEARNING_RATE_AFT = 2e-3
     OPTIM_ARGS = "momentum=0.95"
     WEIGHT_DECAY_AFT = 0.01
     LR_SCHEDULER_TYPE_AFT = "cosine"
@@ -85,7 +85,7 @@ class Parameters:
 
     # LoRA
     USE_ISOLATION = True  # Subspace rank splitting
-    LORA_RANK = 66
+    LORA_RANK = 70
     RANK_ADVERSARY = 32  # RANK_DEFENSER is LORA_RANK - RANK_ADVERSARY
 
     # ADVERSARY
