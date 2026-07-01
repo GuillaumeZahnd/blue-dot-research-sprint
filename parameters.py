@@ -70,7 +70,7 @@ class Parameters:
     BATCH_SIZE_TAR = 8
     MICRO_BATCH_SIZE_TAR = 2  # For meta-gradients (1 harmless, 1 harmful)
     GRADIENT_ACCUMULATION_STEPS_TAR = 1  # We use a custom training_step that prevents accumulation
-    LEARNING_RATE_TAR = 5e-5
+    LEARNING_RATE_TAR = 2e-4
     OPTIM_TAR = "adamw_torch"
     LR_SCHEDULER_TYPE_TAR = "cosine"
     MAX_GRAD_NORM_META_TAR = 10.0   # Clamp the meta gradient before coalescing
